@@ -12,6 +12,7 @@ import Credence.Distribution (
     normalDist,
     uniformDist,
  )
+import Credence.Model (Model (..), observe)
 import Data.Vector.Unboxed qualified as VU
 import Data.Word (Word32)
 import Statistics.Distribution (logDensity, logProbability)
@@ -36,7 +37,78 @@ main = defaultMain tests
 -- doctrine. A wrong sampler looks plausible, so these checks, not the eye, are
 -- what prove correctness.
 tests :: TestTree
-tests = testGroup "credence" [logSumExpTests, densityTests, momentTests]
+tests = testGroup "credence" [logSumExpTests, densityTests, momentTests, modelTests]
+
+{- | A structural interpreter over Sample-free models (only Pure and Observe).
+
+It walks the GADT accumulating each @Observe w m@ into a running log-weight and
+returns the result paired with that weight. It deliberately rejects @Sample@: the
+monad-law cases below are built from @pure@ and @observe@ only, so reaching a
+Sample node means the test structure is wrong, not the monad. This isolates the
+monad's plumbing (does @>>=@ thread continuations and sum observes in order) from
+the sampler, the way the density tests isolate log-densities from sampling. The
+coin model's sampler is proven by the conjugate gate below, where a real
+generator runs it.
+-}
+runObserves :: Model a -> (a, Double)
+runObserves = go 0
+  where
+    go :: Double -> Model b -> (b, Double)
+    go !w (Pure x) = (x, w)
+    go !_ (Sample _ _) = error "runObserves: model-law tests must not sample"
+    go !w (Observe dw m) = go (w + dw) m
+
+{- | The operational Model monad: Sample/Observe reify and the Monad instance is
+lawful.
+
+These checks touch only the structure, never a generator. The conjugate gate
+below is what proves the sampler; this proves the monad it runs on threads
+continuations and accumulates observes correctly, so a sampler interpreter can
+trust the structure it walks.
+
+The whole point of these cases is to write each monad law's left side literally
+(@pure x >>= f@, @m >>= pure@, the un-fused bind chain) and assert it equals the
+simplified right side, so hlint's "simplify this to the right side" hints are
+exactly what must not be applied here.
+-}
+{-# ANN modelTests ("HLint: ignore Monad law, left identity" :: String) #-}
+{-# ANN modelTests ("HLint: ignore Monad law, right identity" :: String) #-}
+{-# ANN modelTests ("HLint: ignore Use >=>" :: String) #-}
+modelTests :: TestTree
+modelTests =
+    testGroup
+        "model monad (structural)"
+        [ testCase "observe accumulates in bind order" $ do
+            -- Three observes in sequence; the structural weight is their sum and
+            -- the result is the final pure value. Confirms >>= threads observes.
+            let m = observe 1.5 >> observe 2.0 >> observe (-0.5) >> pure (9 :: Int)
+                (result, totalW) = runObserves m
+            assertBool ("result is 9: " <> show result) (result == 9)
+            assertBool ("weight is 3.0: " <> show totalW) (abs (totalW - 3.0) < 1e-12)
+        , testCase "left identity: pure x >>= f == f x" $ do
+            -- Binding through pure is the same as applying the continuation.
+            let f x = observe (2 * x) >> pure x
+                (r1, w1) = runObserves (pure (7 :: Double) >>= f)
+                (r2, w2) = runObserves (f 7)
+            assertBool "left identity result" (r1 == r2)
+            assertBool "left identity weight" (abs (w1 - w2) < 1e-12)
+        , testCase "right identity: m >>= pure == m" $ do
+            -- Binding pure on the right changes neither result nor weight.
+            let m = observe 3 >> pure (5 :: Int)
+                (r1, w1) = runObserves (m >>= pure)
+                (r2, w2) = runObserves m
+            assertBool "right identity result" (r1 == r2)
+            assertBool "right identity weight" (abs (w1 - w2) < 1e-12)
+        , testCase "associativity: (m >>= f) >>= g == m >>= (\\x -> f x >>= g)" $ do
+            -- Two continuations chained two ways; order and sum of weights match.
+            let m = observe 1 >> pure (2 :: Int)
+                f x = observe (fromIntegral x) >> pure (x + 1)
+                g y = observe (fromIntegral y) >> pure (y * 2)
+                (rl, wl) = runObserves ((m >>= f) >>= g)
+                (rr, wr) = runObserves (m >>= (\x -> f x >>= g))
+            assertBool "associativity result" (rl == rr)
+            assertBool "associativity weight" (abs (wl - wr) < 1e-12)
+        ]
 
 logSumExpTests :: TestTree
 logSumExpTests =
