@@ -188,7 +188,7 @@ main = do
     opts <- execParser optionsInfo
     validate opts
     case parseFlips (optFlips opts) of
-        Left err -> putStrLn ("error: " <> err)
+        Left err -> dieWith err
         Right flips -> do
             let a = optPriorA opts
                 b = optPriorB opts
