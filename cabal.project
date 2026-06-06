@@ -1,0 +1,24 @@
+packages: .
+
+-- Pin the compiler. ghcup installs and manages this exact version. If
+-- `ghcup list` does not show 9.6.7 as installed, install it before building.
+with-compiler: ghc-9.6.7
+
+-- Lock the Hackage index to the moment Stackage cut LTS 22.44. Every direct
+-- dependency version pinned in credence.cabal comes from that snapshot, so this
+-- timestamp guarantees those exact versions are visible to the solver and that
+-- transitive resolution sees the same Hackage that the snapshot was built
+-- against. Bumping this date is a deliberate dependency-research decision, not a
+-- routine edit.
+index-state: 2025-05-02T08:42:42Z
+
+-- Lock the full transitive closure to the LTS 22.44 set, which is known to build
+-- together against GHC 9.6.7. The direct pins in credence.cabal already match
+-- this snapshot, so there is no conflict. If fetching this at build time is not
+-- wanted, comment the import out: the exact `==` pins plus index-state above are
+-- enough to resolve a consistent build on their own.
+import: https://www.stackage.org/lts-22.44/cabal.config
+
+-- On the first successful build, run `cabal freeze` to write cabal.project.freeze
+-- and capture the resolved plan on this machine. Commit that file. After that,
+-- the build is bit-for-bit reproducible and the import above becomes a backstop.
