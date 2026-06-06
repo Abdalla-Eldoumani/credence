@@ -197,13 +197,17 @@ densityTests =
                 "Uniform"
                 (logDensityDist (uniformDist lo hi) x)
                 (logDensity (uniformDistr lo hi) x)
-        , testCase "Categorical at i=1 vs hand-derived log(w_i / sum w)" $ do
+        , testCase "Categorical at i=1 vs hand-derived log(w_i) - logSumExp(log w)" $ do
             -- No clean statistics constructor for an arbitrary categorical, so the
             -- reference is derived by hand: the normalized log-probability of an
-            -- index is log w_i minus log of the total weight.
+            -- index is log w_i minus the log of the total weight. The normalizer is
+            -- logSumExp over the log-weights, the same log-space path the
+            -- implementation takes; a linear log (VU.sum ws) reference would agree
+            -- here but could not catch an underflow bug in that path, which is the
+            -- failure mode the correctness discipline flags for categoricals.
             let ws = VU.fromList [1, 3, 6 :: Double]
                 i = 1
-                ref = log (ws VU.! i) - log (VU.sum ws)
+                ref = log (ws VU.! i) - logSumExp (VU.map log ws)
             assertCloseDensity "Categorical" (logDensityDist (categoricalDist ws) i) ref
         ]
 
