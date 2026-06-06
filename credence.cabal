@@ -33,6 +33,7 @@ library
     exposed-modules:  Credence
                       Credence.Distribution
                       Credence.Model
+                      Credence.Model.Regression
                       Credence.Trace
                       Credence.Inference.Importance
                       Credence.Inference.MH
