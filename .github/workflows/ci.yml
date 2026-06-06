@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Statistical tests are made stable by fixed seeds inside the suite itself (see
+# the correctness discipline), not by environment configuration. CI runs on
+# Linux so the documented tolerances hold.
+
+jobs:
+  engine:
+    name: engine (haskell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: set up GHC and cabal
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: '9.6.7'
+          cabal-version: '3.14.2.0'
+          cabal-update: true
+
+      - name: configure
+        run: cabal build all --enable-tests --dry-run
+
+      - name: cache cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: ${{ runner.os }}-ghc9.6.7-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.freeze') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc9.6.7-
+
+      - name: build
+        run: cabal build all --enable-tests
+
+      - name: test
+        run: cabal test all
+
+      - name: hlint
+        run: |
+          cabal install hlint --overwrite-policy=always
+          hlint .
+
+      - name: fourmolu format check
+        run: |
+          cabal install fourmolu --overwrite-policy=always
+          fourmolu --mode check $(git ls-files '*.hs')
+
+  web:
+    name: web (next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: set up node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: install
+        run: npm ci
+
+      - name: lint
+        run: npx biome ci .
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: build
+        run: npm run build
