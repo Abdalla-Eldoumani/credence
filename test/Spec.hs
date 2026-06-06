@@ -17,7 +17,9 @@ import Credence.Inference.Importance (
     normalizedLogWeights,
     posteriorMean,
  )
+import Credence.Inference.MH (mhChain)
 import Credence.Model (Model (..), coinModel, observe, sample)
+import Credence.Trace (traceAddresses, traceModel)
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import Data.Word (Word32)
@@ -53,6 +55,9 @@ tests =
         , modelTests
         , importanceTests
         , conjugateTests
+        , mhTraceTests
+        , mhDetailedBalanceTests
+        , mhConjugateTests
         ]
 
 {- | A structural interpreter over Sample-free models (only Pure and Observe).
@@ -514,5 +519,209 @@ conjugateTests =
                 (abs (estMean - analyticMean) < meanTol)
             assertBool
                 ("posterior variance " <> show estVar <> " near analytic " <> show analyticVar <> " (tol " <> show varTol <> ")")
+                (abs (estVar - analyticVar) < varTol)
+        ]
+
+{- | Address stability: the tracing interpreter names choices reproducibly.
+
+Trace-based MH rests on each random choice keeping a stable identity across runs,
+so a proposal perturbs the same choice it means to. Addresses are execution-order
+positions, so for a fixed-structure model the same control flow must visit the
+same 'Sample' nodes in the same order and assign the same addresses every run.
+This pins that for the coin model: two runs under the same fixed seed yield the
+same address list, and the coin model has exactly one choice, so that list is
+@[0]@. A regression here (addresses drifting or reordering) would silently break
+every MH proposal, so it is asserted directly rather than left implicit in the
+chain tests.
+-}
+mhTraceTests :: TestTree
+mhTraceTests =
+    testGroup
+        "trace addressing (stable across runs)"
+        [ testCase "coin model trace addresses are [0] on two runs with the same flips" $ do
+            let flips = replicate 7 True ++ replicate 3 False
+                -- Run the tracing interpreter twice under the same fixed seed.
+                addrs1 = runST $ do
+                    g <- initialize fixedSeed
+                    (_, t) <- traceModel (coinModel 2 2 flips) g
+                    pure (traceAddresses t)
+                addrs2 = runST $ do
+                    g <- initialize fixedSeed
+                    (_, t) <- traceModel (coinModel 2 2 flips) g
+                    pure (traceAddresses t)
+            -- The single-Sample coin model has exactly address 0, on both runs.
+            assertBool ("run 1 addresses are [0]: " <> show addrs1) (addrs1 == [0])
+            assertBool ("run 2 addresses are [0]: " <> show addrs2) (addrs2 == [0])
+            assertBool
+                ("the two runs agree on addresses: " <> show addrs1 <> " vs " <> show addrs2)
+                (addrs1 == addrs2)
+        ]
+
+{- | Detailed balance: the MH chain converges to a known stationary distribution.
+
+This is the oracle the correctness discipline mandates for MH and the check
+that the acceptance ratio and the addressing are right. A wrong ratio yields a
+smooth, plausible, WRONG stationary distribution, so the proof is a small target
+whose stationary distribution is known in closed form, against which the chain's
+empirical distribution is compared.
+
+The target is discrete and tractable, and deliberately uses a NON-UNIFORM prior so
+the proposal correction (the Hastings term) is load-bearing rather than zero. A
+categorical prior proportional to @[3, 2, 1]@ over the indices {0, 1, 2} is
+reshaped by a likelihood proportional to @[1, 3, 6]@, via @observe@ of that
+categorical's log-density at the drawn index. The posterior over the index is
+prior times likelihood, @prior_i * lik_i ~ [3, 6, 6]@, normalized to
+@[0.2, 0.4, 0.4]@, the known stationary distribution.
+
+Why non-uniform: the proposal redraws the index from the prior, so for a UNIFORM
+prior the proposal is symmetric and the Hastings correction vanishes identically;
+a chain that wrongly dropped that correction would still pass against a uniform
+target, giving the test no teeth on the proposal term. With this non-uniform
+prior the correction does not cancel (it is the standard independence-proposal
+correction that, with the prior difference, leaves the likelihood ratio
+@lik_j / lik_i@), so dropping it skews the stationary distribution toward the
+high-prior index and the test fails loudly. That is the mutation the test-teeth
+check exercises, and at the committed seed dropping the Hastings term moves the
+empirical distribution to roughly @[0.33, 0.44, 0.22]@, about 0.18 off the target
+and ~9x outside the tolerance below. The acceptance rate is asserted strictly
+inside (0,1): a chain that never moves or always moves is a bug even if the
+frequencies happen to match.
+-}
+mhDetailedBalanceTests :: TestTree
+mhDetailedBalanceTests =
+    testGroup
+        "detailed balance (chain converges to a known stationary distribution)"
+        [ testCase "MH empirical distribution matches [0.2,0.4,0.4] and the acceptance rate is in (0,1)" $ do
+            let
+                -- Non-uniform prior and a likelihood; the stationary distribution is
+                -- prior_i * lik_i normalized, which is [3,6,6]/15 = [0.2,0.4,0.4].
+                priorWs = VU.fromList [3, 2, 1 :: Double]
+                likWs = VU.fromList [1, 3, 6 :: Double]
+                unnormalized = VU.zipWith (*) priorWs likWs
+                total = VU.sum unnormalized
+                stationary = map (/ total) (VU.toList unnormalized)
+                -- Draw the index from the non-uniform prior, then reshape by the
+                -- likelihood. The non-uniform prior keeps the Hastings correction
+                -- non-zero, so the full acceptance ratio is genuinely tested.
+                target = do
+                    i <- sample (categoricalDist priorWs)
+                    observe (logDensityDist (categoricalDist likWs) i)
+                    pure i
+                -- A long chain with a burn-in discarded. Fixed ST seed.
+                n = 200000
+                burn = 20000
+                (chain, rate) = runST $ do
+                    g <- initialize fixedSeed
+                    mhChain n target g
+                kept = V.drop burn chain
+                keptN = fromIntegral (V.length kept) :: Double
+                -- Empirical frequency of each index over the post-burn chain.
+                empirical =
+                    [ fromIntegral (V.length (V.filter (== j) kept)) / keptN
+                    | j <- [0 .. VU.length priorWs - 1]
+                    ]
+                -- Tolerance. Each bin frequency is a multinomial proportion; its
+                -- standard error is sqrt(p(1-p)/Neff). MH samples are
+                -- autocorrelated, so the effective sample size is below the 180000
+                -- kept draws; budget a conservative Neff ~ n/10 = 18000. The
+                -- worst-case bin p=0.4 then has SE ~ sqrt(0.24/18000) ~ 0.0037, so
+                -- a 0.02 window is ~5 SE: a correct chain clears it essentially
+                -- always, while a wrong acceptance ratio (the dropped-Hastings
+                -- mutation skews this to ~0.18 off) misses by far more. The observed
+                -- max deviation at the committed seed is ~0.0017, about 11x inside
+                -- the window.
+                tol = 0.02
+            -- The acceptance rate must be a genuine accept/reject, not degenerate.
+            assertBool
+                ("acceptance rate strictly in (0,1): " <> show rate)
+                (rate > 0 && rate < 1)
+            -- The chain's empirical distribution matches the known stationary one.
+            mapM_
+                ( \(j, e, s) ->
+                    assertBool
+                        ("index " <> show j <> " empirical " <> show e <> " near stationary " <> show s <> " (tol " <> show tol <> ")")
+                        (abs (e - s) < tol)
+                )
+                (zip3 [0 :: Int ..] empirical stationary)
+        ]
+
+{- | THE MH conjugate gate: the chain matches the analytic Beta posterior.
+
+The second oracle for MH, alongside detailed balance, and the exact analogue of
+the stage 1 importance-sampling gate: on the coin model, whose posterior is
+the closed-form Beta(a+h, b+t), the MH chain's empirical mean and variance must
+match that posterior. Mean alone is not enough (a chain can hit the mean while
+getting the spread wrong), so variance is checked too, and the analytic moments
+are independently cross-checked against @statistics@' @betaDistr@ so a typo in
+either path is caught. Passing this together with detailed balance closes the
+first half of the stage 2 gate.
+
+Unlike the importance sample, MH draws are autocorrelated, so the effective sample
+size is well below the chain length and the windows are looser than the
+importance-sampling gate's for the same nominal n. The proposal is the single-site
+prior proposal on the one Beta choice, which mixes well here (the measured
+acceptance rate is about 0.5), so a moderate chain with a burn-in lands inside the
+documented windows essentially always. The acceptance rate is also asserted inside
+(0,1).
+-}
+mhConjugateTests :: TestTree
+mhConjugateTests =
+    testGroup
+        "MH conjugate-analytic agreement (Beta posterior on the coin model)"
+        [ testCase "MH chain matches Beta(a+h, b+t) in mean and variance; acceptance rate in (0,1)" $ do
+            let
+                -- Prior Beta(2,2), 7 heads and 3 tails, so posterior Beta(9,5).
+                (a, b) = (2, 2) :: (Double, Double)
+                heads = 7 :: Int
+                tails = 3 :: Int
+                flips = replicate heads True ++ replicate tails False
+                a' = a + fromIntegral heads
+                b' = b + fromIntegral tails
+                -- Analytic posterior moments by the closed-form Beta formulas.
+                analyticMean = a' / (a' + b')
+                analyticVar = (a' * b') / ((a' + b') * (a' + b') * (a' + b' + 1))
+                -- Independent cross-check via statistics, same defense as stage 1.
+                refDist = betaDistr a' b'
+                -- The MH chain on the coin model under a FIXED ST seed.
+                n = 200000
+                burn = 20000
+                (chain, rate) = runST $ do
+                    g <- initialize fixedSeed
+                    mhChain n (coinModel a b flips) g
+                kept = V.drop burn chain
+                keptN = fromIntegral (V.length kept) :: Double
+                -- Empirical mean and variance over the post-burn chain, variance by
+                -- E[theta^2] - (E[theta])^2.
+                estMean = V.sum kept / keptN
+                estSecond = V.sum (V.map (\x -> x * x) kept) / keptN
+                estVar = estSecond - estMean * estMean
+                -- Tolerances. The target is Beta(9,5), mean 9/14 ~ 0.643, sd ~ 0.124.
+                -- MH samples are autocorrelated, so the effective sample size is
+                -- below the 180000 kept draws; at the measured acceptance rate ~0.5
+                -- a conservative ESS ~ n/10 = 18000 gives a mean SE ~ 0.124/sqrt(18000)
+                -- ~ 0.00092, so a 0.02 mean window is ~20 SE. The variance is a
+                -- noisier second-moment estimator against an analytic value of only
+                -- ~0.0153, so it gets the looser 0.005 window (the same value the
+                -- importance gate uses). Both clear a correct chain essentially
+                -- always while a wrong acceptance ratio misses by far more.
+                meanTol = 0.02
+                varTol = 0.005
+            -- Hand formulas agree with the statistics reference to round-off.
+            assertBool
+                ("analytic mean matches betaDistr: " <> show analyticMean <> " vs " <> show (mean refDist))
+                (abs (analyticMean - mean refDist) < 1e-9)
+            assertBool
+                ("analytic variance matches betaDistr: " <> show analyticVar <> " vs " <> show (variance refDist))
+                (abs (analyticVar - variance refDist) < 1e-9)
+            -- The acceptance rate is a genuine accept/reject.
+            assertBool
+                ("acceptance rate strictly in (0,1): " <> show rate)
+                (rate > 0 && rate < 1)
+            -- The gate: the MH posterior agrees with the analytic posterior.
+            assertBool
+                ("MH posterior mean " <> show estMean <> " near analytic " <> show analyticMean <> " (tol " <> show meanTol <> ")")
+                (abs (estMean - analyticMean) < meanTol)
+            assertBool
+                ("MH posterior variance " <> show estVar <> " near analytic " <> show analyticVar <> " (tol " <> show varTol <> ")")
                 (abs (estVar - analyticVar) < varTol)
         ]
