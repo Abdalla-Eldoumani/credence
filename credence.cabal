@@ -1,0 +1,81 @@
+cabal-version:      3.4
+name:               credence
+version:            0.1.0
+synopsis:           An embedded probabilistic language with live inference
+description:        A small embedded probabilistic programming language in
+                    Haskell. Models are monadic computations over two
+                    primitives, sample and observe. Inference backends
+                    (importance sampling, trace-based Metropolis-Hastings,
+                    and a sequential Monte Carlo particle filter) are
+                    interpreters of the same model. The engine streams
+                    samples and running summaries to a web visualizer that
+                    animates the posterior as it converges.
+license:            MIT
+author:             Abdalla Eldoumani
+build-type:         Simple
+extra-doc-files:    README.md
+
+-- Pinned to the GHC-9.6.7 consistent set from Stackage LTS 22.44.
+-- The exact transitive closure is locked by cabal.project (index-state)
+-- plus a freeze file generated on first build. Do not widen these bounds
+-- without re-running the version-pinning research and updating the project notes.
+
+common warnings
+    ghc-options:      -Wall -Wcompat -Wincomplete-record-updates
+                      -Wincomplete-uni-patterns -Wredundant-constraints
+    default-language: GHC2021
+
+library
+    import:           warnings
+    hs-source-dirs:   src
+    -- Add new modules here as they are built. Keep this list in sync with
+    -- the files under src/. The the project notes self-update rule covers this.
+    exposed-modules:  Credence
+    build-depends:
+        base          >=4.18 && <4.19
+      , containers     ==0.6.7
+      , vector         ==0.13.1.0
+      , mwc-random     ==0.15.2.0
+      , math-functions ==0.3.4.4
+
+executable credence
+    import:           warnings
+    hs-source-dirs:   app/cli
+    main-is:          Main.hs
+    ghc-options:      -threaded -rtsopts
+    build-depends:
+        base
+      , credence
+      , vector ==0.13.1.0
+    -- stage 2+ adds, pinned: optparse-applicative ==0.18.1.0
+
+executable credence-server
+    import:           warnings
+    hs-source-dirs:   app/server
+    main-is:          Main.hs
+    ghc-options:      -threaded -rtsopts "-with-rtsopts=-N"
+    build-depends:
+        base
+      , credence
+      , scotty         ==0.20.1
+      , text
+    -- stage 3 adds, pinned: aeson ==2.1.2.1, wai ==3.2.4,
+    -- wai-extra ==3.1.15, warp ==3.3.31, http-types ==0.12.4,
+    -- async ==2.2.5, stm, bytestring
+
+test-suite credence-test
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Spec.hs
+    ghc-options:      -threaded -rtsopts
+    build-depends:
+        base
+      , credence
+      , tasty            ==1.4.3
+      , tasty-hunit      ==0.10.2
+      , tasty-quickcheck ==0.10.2
+      , QuickCheck       ==2.14.3
+      , statistics       ==0.16.3.0
+      , vector           ==0.13.1.0
+      , mwc-random       ==0.15.2.0
