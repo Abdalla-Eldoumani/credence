@@ -51,6 +51,7 @@ executable credence
         base
       , credence
       , vector               ==0.13.1.0
+      , mwc-random           ==0.15.2.0
       , optparse-applicative ==0.18.1.0
 
 executable credence-server
