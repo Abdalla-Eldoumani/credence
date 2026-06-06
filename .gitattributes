@@ -1,0 +1,16 @@
+# Force LF on every text file. The repo is built inside WSL but may be touched
+# by host-side Windows tools, and CRLF crossing that boundary has caused real
+# breakage before (shell scripts that will not execute, spurious diffs). Normalize
+# on commit and check out LF everywhere.
+* text=auto eol=lf
+
+# Shell scripts and Haskell sources must stay LF regardless of platform.
+*.sh text eol=lf
+*.hs text eol=lf
+
+# Treat known binaries as binary so they are never line-ending mangled.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
