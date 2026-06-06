@@ -48,6 +48,7 @@ tests =
         "credence"
         [ logSumExpTests
         , densityTests
+        , supportTests
         , momentTests
         , modelTests
         , importanceTests
@@ -204,6 +205,47 @@ densityTests =
                 i = 1
                 ref = log (ws VU.! i) - log (VU.sum ws)
             assertCloseDensity "Categorical" (logDensityDist (categoricalDist ws) i) ref
+        ]
+
+{- | Assert a log-density is exactly @-Infinity@, and crucially not @NaN@.
+
+The distinction is the whole point of the support guards. At a boundary like
+Beta(1, 1) at @x = 0@, the unguarded formula computes @0 * -Infinity = NaN@. A
+@NaN@ silently poisons every downstream sum and acceptance ratio, where an honest
+@-Infinity@ is the log-probability of an impossible outcome and propagates
+correctly. So this checks both halves: infinite (so the outcome is scored
+impossible) and negative (so it is the low end, not @+Infinity@), and the @isNaN@
+guard makes @NaN@ fail rather than slip through 'isInfinite'.
+-}
+assertNegInfinity :: String -> Double -> IO ()
+assertNegInfinity name x =
+    assertBool
+        (name <> ": expected -Infinity, got " <> show x)
+        (isInfinite x && x < 0 && not (isNaN x))
+
+{- | Out-of-domain inputs score @-Infinity@, never @NaN@.
+
+Each continuous density has an open support, and the correctness discipline
+is explicit that a guard returning @-Infinity@ must have a test pinning it,
+because the failure it prevents (a @NaN@ from @0 * log 0@ at a boundary, or a
+panic from an out-of-range categorical index reached through @observe@) is
+silent or fatal otherwise. These cases hit the exact boundaries that the formula
+would mishandle.
+-}
+supportTests :: TestTree
+supportTests =
+    testGroup
+        "support guards (out-of-domain scores -Infinity, not NaN)"
+        [ testCase "Beta(1,1) at 0 and 1 is -Infinity (the 0 * log 0 trap)" $ do
+            -- The uniform prior. a = 1 makes (a-1)*log 0 = 0 * -Infinity = NaN
+            -- without the guard; b = 1 is the mirror trap at x = 1.
+            assertNegInfinity "Beta(1,1) at 0" (logDensityDist (betaDist 1 1) 0)
+            assertNegInfinity "Beta(1,1) at 1" (logDensityDist (betaDist 1 1) 1)
+        , testCase "Beta(2,2) at 0 and 1 is -Infinity (not NaN)" $ do
+            -- With a, b > 1 the unguarded formula already gives -Infinity, but the
+            -- guard must not have turned that into NaN or flipped its sign.
+            assertNegInfinity "Beta(2,2) at 0" (logDensityDist (betaDist 2 2) 0)
+            assertNegInfinity "Beta(2,2) at 1" (logDensityDist (betaDist 2 2) 1)
         ]
 
 {- | A fixed seed for every statistical test, so a run is reproducible and a pass

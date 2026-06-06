@@ -65,14 +65,24 @@ bernoulliDist p =
 
 Log-density at @x@ is @(a - 1) * log x + (b - 1) * log (1 - x) - logBeta a b@,
 where @logBeta@ is the log of the beta function from @math-functions@. Finite for
-@a, b > 0@ and @x@ in the open interval; outside the support @log x@ or
-@log (1 - x)@ goes to @-Infinity@.
+@a, b > 0@ and @x@ in the open interval; outside the open support it is
+@-Infinity@.
+
+The endpoints are guarded explicitly rather than left to @log@. At @x = 0@ with
+@a = 1@ the term @(a - 1) * log x@ is @0 * -Infinity@, which is @NaN@, not the
+@-Infinity@ the impossible outcome deserves; the same trap sits at @x = 1@ with
+@b = 1@, and Beta(1, 1) is the uniform prior that the coin model leans on. So
+anything at or beyond the open interval scores @-Infinity@ and only interior
+points reach the formula.
 -}
 betaDist :: Double -> Double -> Dist Double
 betaDist a b =
     Dist
         { sampleDist = MWC.beta a b
-        , logDensityDist = \x -> (a - 1) * log x + (b - 1) * log (1 - x) - logBeta a b
+        , logDensityDist = \x ->
+            if x > 0 && x < 1
+                then (a - 1) * log x + (b - 1) * log (1 - x) - logBeta a b
+                else negate (1 / 0)
         }
 
 {- | Normal(mu, sigma) with mean @mu@ and standard deviation @sigma@ (not
