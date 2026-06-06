@@ -1,0 +1,33 @@
+{
+  "name": "credence-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "fix": "biome check --write ."
+  },
+  "dependencies": {
+    "next": "16.2.7",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "d3-scale": "4.0.2",
+    "d3-shape": "3.2.0",
+    "d3-array": "3.2.4"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "24.13.1",
+    "@types/react": "19.2.16",
+    "@types/react-dom": "19.2.3",
+    "@types/d3-scale": "4.0.9",
+    "@types/d3-shape": "3.1.8",
+    "@types/d3-array": "3.2.2",
+    "@biomejs/biome": "2.4.16"
+  }
+}
