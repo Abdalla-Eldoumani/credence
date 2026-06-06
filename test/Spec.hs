@@ -12,7 +12,13 @@ import Credence.Distribution (
     normalDist,
     uniformDist,
  )
-import Credence.Model (Model (..), observe)
+import Credence.Inference.Importance (
+    importanceSamples,
+    normalizedLogWeights,
+    posteriorMean,
+ )
+import Credence.Model (Model (..), coinModel, observe, sample)
+import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import Data.Word (Word32)
 import Statistics.Distribution (logDensity, logProbability)
@@ -28,16 +34,24 @@ import Test.Tasty.HUnit (assertBool, testCase)
 main :: IO ()
 main = defaultMain tests
 
--- The stage 1 gate is conjugate-analytic agreement (importance sampling on
--- the coin model versus the closed-form Beta posterior); that lands with the
--- sampler in 01-02. This suite proves the foundation under it: the log-space
--- helper, every distribution's log-density against the independent statistics
--- oracle, and every distribution's sampler tied to that same parameterization by
--- a moment-matching test. See the correctness checks for the
--- doctrine. A wrong sampler looks plausible, so these checks, not the eye, are
--- what prove correctness.
+-- The stage 1 gate is conjugate-analytic agreement: importance sampling on
+-- the coin model versus the closed-form Beta posterior (conjugateTests). Under it
+-- sit the foundations: the log-space helper, every distribution's log-density
+-- against the independent statistics oracle, every distribution's sampler tied to
+-- that parameterization by moment matching, the model monad's laws, and the
+-- importance sampler's normalization and unbiasedness. See
+-- the correctness checks for the doctrine. A wrong sampler looks
+-- plausible, so these checks, not the eye, are what prove correctness.
 tests :: TestTree
-tests = testGroup "credence" [logSumExpTests, densityTests, momentTests, modelTests]
+tests =
+    testGroup
+        "credence"
+        [ logSumExpTests
+        , densityTests
+        , momentTests
+        , modelTests
+        , importanceTests
+        ]
 
 {- | A structural interpreter over Sample-free models (only Pure and Observe).
 
@@ -305,3 +319,63 @@ assertMoment name empirical target tol =
     assertBool
         (name <> ": empirical=" <> show empirical <> " target=" <> show target <> " tol=" <> show tol)
         (abs (empirical - target) < tol)
+
+{- | The importance sampler's mechanics: log-space normalization and an unbiased
+estimate of a known integral.
+
+These are the pieces the conjugate gate rests on, checked in isolation. The
+normalization cases pin down 'normalizedLogWeights' and 'posteriorMean' as pure
+functions. The unbiased case is the correctness discipline's second oracle
+(unbiased estimation of a known integral): a model that only samples, with no
+observe, has every log-weight zero, so the weighted mean is an ordinary average
+and must converge to the prior mean it draws from. That isolates the
+"draw each Sample from its prior" half of the interpreter from the observe half
+the conjugate gate exercises.
+-}
+importanceTests :: TestTree
+importanceTests =
+    testGroup
+        "importance sampling (normalization and unbiasedness)"
+        [ testCase "normalizedLogWeights sums to 1" $ do
+            -- Arbitrary unequal log-weights; the normalized weights are a
+            -- probability vector, so they sum to 1 up to round-off.
+            let ws = VU.fromList [-2.0, 0.5, -1.0, 3.0, -0.25]
+                total = VU.sum (normalizedLogWeights ws)
+            assertBool ("sum of normalized weights is 1: " <> show total) (abs (total - 1) < 1e-12)
+        , testCase "normalizedLogWeights of equal log-weights is uniform" $ do
+            -- Equal log-weights mean equal probability: each of n weights is 1/n.
+            -- Catches a normalizer that divides by the wrong quantity.
+            let n = 5
+                ws = VU.replicate n (1.7 :: Double)
+                normed = normalizedLogWeights ws
+                expected = 1 / fromIntegral n
+            assertBool
+                ("each equal weight is 1/n: " <> show (VU.toList normed))
+                (VU.all (\w -> abs (w - expected) < 1e-12) normed)
+        , testCase "posteriorMean of a constant projection is that constant" $ do
+            -- E[c] under any normalized weights is c, since the weights sum to 1.
+            -- Pins posteriorMean to weight-normalize rather than, say, average raw.
+            let samples = V.fromList [(0.2, -1.0), (0.8, 2.0), (0.5, 0.3)] :: V.Vector (Double, Double)
+                est = posteriorMean samples (const 4.0)
+            assertBool ("constant expectation is 4: " <> show est) (abs (est - 4.0) < 1e-12)
+        , testCase "unbiased: prior-only model estimates the prior mean a/(a+b)" $ do
+            -- A model that samples Beta(2,5) and observes nothing: all log-weights
+            -- are 0, normalized weights are uniform, so posteriorMean theta id is a
+            -- plain Monte Carlo estimate of E[theta] = a/(a+b) = 2/7. Fixed ST seed.
+            let (a, b) = (2, 5)
+                n = 50000
+                priorOnly = sample (betaDist a b)
+                samples = runST $ do
+                    g <- initialize fixedSeed
+                    importanceSamples n priorOnly g
+                est = posteriorMean samples id
+                target = a / (a + b)
+                -- Beta(2,5) sd ~ 0.16, so at n=5e4 the mean SE ~ 0.16/sqrt(5e4)
+                -- ~ 0.0007. With uniform weights this is an iid estimator, so a
+                -- 0.01 window is ~14 SE: a correct sampler clears it essentially
+                -- always while a prior drawn from the wrong distribution would miss.
+                tol = 0.01
+            assertBool
+                ("prior mean estimate " <> show est <> " near " <> show target <> " (tol " <> show tol <> ")")
+                (abs (est - target) < tol)
+        ]
