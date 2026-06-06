@@ -110,13 +110,19 @@ green, and the result silently wrong. The moment test ties them together (mean
 @k * theta@, variance @k * theta^2@).
 
 Log-density at @x > 0@ is @(k - 1) * log x - x / theta - k * log theta - logGamma k@,
-with @logGamma@ the log gamma function from @math-functions@.
+with @logGamma@ the log gamma function from @math-functions@. The support is
+@x > 0@, guarded explicitly: at @x = 0@ with @k = 1@ the term @(k - 1) * log x@
+is @0 * -Infinity = NaN@, and at @x < 0@ the @log x@ is @NaN@ too, so anything at
+or below zero scores @-Infinity@ rather than poisoning the weight with a @NaN@.
 -}
 gammaDist :: Double -> Double -> Dist Double
 gammaDist k theta =
     Dist
         { sampleDist = MWC.gamma k theta
-        , logDensityDist = \x -> (k - 1) * log x - x / theta - k * log theta - logGamma k
+        , logDensityDist = \x ->
+            if x > 0
+                then (k - 1) * log x - x / theta - k * log theta - logGamma k
+                else negate (1 / 0)
         }
 
 {- | Categorical over indices @0 .. n - 1@ with unnormalized non-negative

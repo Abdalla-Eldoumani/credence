@@ -246,6 +246,12 @@ supportTests =
             -- guard must not have turned that into NaN or flipped its sign.
             assertNegInfinity "Beta(2,2) at 0" (logDensityDist (betaDist 2 2) 0)
             assertNegInfinity "Beta(2,2) at 1" (logDensityDist (betaDist 2 2) 1)
+        , testCase "Gamma(0.5,1) at 0 and a negative x is -Infinity (not NaN)" $ do
+            -- k = 0.5 < 1 makes (k-1)*log 0 = (-0.5) * -Infinity = +Infinity in
+            -- isolation, but the support is x > 0 regardless, so x = 0 scores
+            -- -Infinity. A negative x feeds log x = NaN without the guard.
+            assertNegInfinity "Gamma(0.5,1) at 0" (logDensityDist (gammaDist 0.5 1.0) 0)
+            assertNegInfinity "Gamma(0.5,1) at -2" (logDensityDist (gammaDist 0.5 1.0) (-2))
         ]
 
 {- | A fixed seed for every statistical test, so a run is reproducible and a pass
