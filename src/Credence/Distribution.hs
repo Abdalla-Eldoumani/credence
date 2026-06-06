@@ -134,12 +134,22 @@ log-density of index @i@ is @log (weights ! i) - logSumExp (map log weights)@.
 Doing the normalization through 'logSumExp' rather than dividing by a raw sum
 keeps it stable and underflow-free, the failure mode the correctness
 discipline flags for categoricals specifically.
+
+The caller must pass non-negative weights with at least one positive entry; this
+is the library's usual parameter precondition and is not guarded, the same way
+@normalDist@ trusts @sigma > 0@. The index is different: it is data, not a
+parameter, and an out-of-range @i@ reaches the density through @observe@ in a
+user model, so an index below @0@ or at or beyond @n@ scores @-Infinity@ rather
+than panicking on an out-of-bounds vector read.
 -}
 categoricalDist :: VU.Vector Double -> Dist Int
 categoricalDist weights =
     Dist
         { sampleDist = MWC.categorical weights
-        , logDensityDist = \i -> log (weights VU.! i) - logZ
+        , logDensityDist = \i ->
+            if i >= 0 && i < VU.length weights
+                then log (weights VU.! i) - logZ
+                else negate (1 / 0)
         }
   where
     -- Normalizer computed once in log-space and shared by every query.

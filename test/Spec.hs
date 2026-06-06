@@ -252,6 +252,13 @@ supportTests =
             -- -Infinity. A negative x feeds log x = NaN without the guard.
             assertNegInfinity "Gamma(0.5,1) at 0" (logDensityDist (gammaDist 0.5 1.0) 0)
             assertNegInfinity "Gamma(0.5,1) at -2" (logDensityDist (gammaDist 0.5 1.0) (-2))
+        , testCase "Categorical out-of-range index is -Infinity (no panic)" $ do
+            -- The index is data and an out-of-range i reaches the density through
+            -- observe; an unguarded weights VU.! i would panic. Below 0 and at the
+            -- length (one past the last valid index) both score -Infinity.
+            let ws = VU.fromList [1, 3, 6 :: Double]
+            assertNegInfinity "Categorical at 3" (logDensityDist (categoricalDist ws) 3)
+            assertNegInfinity "Categorical at -1" (logDensityDist (categoricalDist ws) (-1))
         ]
 
 {- | A fixed seed for every statistical test, so a run is reproducible and a pass
