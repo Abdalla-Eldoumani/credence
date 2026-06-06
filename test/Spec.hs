@@ -19,6 +19,7 @@ import Credence.Inference.Importance (
  )
 import Credence.Inference.MH (mhChain)
 import Credence.Model (Model (..), coinModel, observe, sample)
+import Credence.Model.Regression (linearRegression)
 import Credence.Trace (traceAddresses, traceModel)
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
@@ -58,6 +59,7 @@ tests =
         , mhTraceTests
         , mhDetailedBalanceTests
         , mhConjugateTests
+        , normalNormalTests
         ]
 
 {- | A structural interpreter over Sample-free models (only Pure and Observe).
@@ -723,5 +725,125 @@ mhConjugateTests =
                 (abs (estMean - analyticMean) < meanTol)
             assertBool
                 ("MH posterior variance " <> show estVar <> " near analytic " <> show analyticVar <> " (tol " <> show varTol <> ")")
+                (abs (estVar - analyticVar) < varTol)
+        ]
+
+{- | The regression fixture shared by the Normal-Normal agreement gate and the
+cross-seed convergence test.
+
+One single-coefficient line @y = w * x@ with a broad Normal prior on the slope,
+known observation noise, and a small literal dataset near the true slope 2. The
+parameters live here once so both tests run the same model and agree on the
+analytic posterior; changing the fixture in one place changes it for both, which
+is what keeps the cross-seed test honest about the same @muN@ the agreement test
+checks.
+
+Prior @Normal(0, 3)@ is weakly informative (the truth 2 sits 0.67 prior-sd from
+the mean), known noise @sigmaL = 1@. The five points carry mild deviations off
+@y = 2 x@, kept literal so every run is deterministic.
+-}
+regMu0, regSigma0, regSigmaL :: Double
+regMu0 = 0.0
+regSigma0 = 3.0
+regSigmaL = 1.0
+
+regPoints :: [(Double, Double)]
+regPoints = [(1.0, 2.1), (2.0, 3.9), (3.0, 6.2), (4.0, 7.8), (5.0, 10.3)]
+
+{- | The closed-form Normal-Normal posterior on the slope for 'regPoints',
+computed in precision form (precision is one over variance).
+
+For a Normal prior @Normal(mu0, sigma0)@ on @w@ and observations @y_i ~
+Normal(w * x_i, sigmaL)@ with known @sigmaL@, the posterior on @w@ is Normal with
+posterior precision @1/sigma0^2 + (sum_i x_i^2)/sigmaL^2@ and posterior mean
+@posteriorVar * (mu0/sigma0^2 + (sum_i x_i*y_i)/sigmaL^2)@. This is the scalar
+Normal-Normal conjugate result with each observation weighted by its @x_i@,
+derived from the location form rather than asserted blind; the agreement test is
+what arbitrates it. Returns @(muN, sigmaN^2)@.
+-}
+regPosterior :: (Double, Double)
+regPosterior = (muN, varN)
+  where
+    sx2 = sum [x * x | (x, _) <- regPoints]
+    sxy = sum [x * y | (x, y) <- regPoints]
+    priorPrec = 1 / (regSigma0 * regSigma0)
+    tauN = priorPrec + sx2 / (regSigmaL * regSigmaL)
+    varN = 1 / tauN
+    muN = varN * (regMu0 * priorPrec + sxy / (regSigmaL * regSigmaL))
+
+{- | THE Normal-Normal gate: the regression posterior matches its closed-form
+Normal posterior in mean and variance.
+
+The second conjugate oracle the correctness discipline mandates, independent
+of the Beta gate and on a structurally different model: a continuous latent with
+many observations rather than one Beta draw. The fixture is conjugate
+Normal-Normal with known noise ('regPoints'), so the posterior on the slope is an
+exact Normal whose mean @muN@ and variance @sigmaN^2@ come from the precision-form
+formulas in 'regPosterior'. Importance sampling on @linearRegression@ under a
+fixed ST seed must reproduce both. Mean alone is not enough (a sampler can hit the
+mean while getting the spread wrong), so the variance is checked too.
+
+The analytic @muN@ and @sigmaN^2@ are cross-checked against @statistics@'
+@normalDistr muN sigmaN@ to round-off before the sampler is judged: @mean@ and
+@variance@ of that Normal are just @muN@ and @sigmaN^2@, so the check is trivially
+true and serves as the typo guard that the values feeding the assertion are the
+ones the formulas compute, the same defense the Beta gate uses against a
+mistyped closed form.
+
+Importance sampling is the lowest-variance choice for this exact-match gate; MH
+agreement on regression is exercised additionally by the cross-seed test. This
+fixture demonstrates a second model running under an interpreter unchanged.
+-}
+normalNormalTests :: TestTree
+normalNormalTests =
+    testGroup
+        "Normal-Normal conjugate agreement (regression posterior on the slope)"
+        [ testCase "regression importance posterior matches the closed-form Normal posterior in mean and variance" $ do
+            let
+                -- Analytic posterior on the slope from the precision-form formulas.
+                (analyticMean, analyticVar) = regPosterior
+                analyticSd = sqrt analyticVar
+                -- Independent cross-check: the same moments via statistics. mean and
+                -- variance of normalDistr muN sigmaN are muN and sigmaN^2, so a
+                -- disagreement here means the analytic path was mistyped.
+                refDist = normalDistr analyticMean analyticSd
+                -- Importance sampling on the regression model under a FIXED ST seed.
+                n = 200000
+                samples = runST $ do
+                    g <- initialize fixedSeed
+                    importanceSamples n (linearRegression regMu0 regSigma0 regSigmaL regPoints) g
+                -- Estimated posterior mean and variance from the weighted sample,
+                -- variance by E[w^2] - (E[w])^2 on the normalized weights.
+                estMean = posteriorMean samples id
+                estSecond = posteriorMean samples (\w -> w * w)
+                estVar = estSecond - estMean * estMean
+                -- Tolerances. The proposal is the prior Normal(0,3); the target is
+                -- the posterior Normal(muN ~ 2.018, sigmaN ~ 0.135). The likelihood
+                -- (five Normal factors with sum x^2 = 55, sigmaL = 1) is sharper than
+                -- the broad prior, so the effective sample size is ~5% of n; at
+                -- n = 2e5 that is ESS ~ 10000 and the self-normalized mean SE ~
+                -- sigmaN/sqrt(ESS) ~ 0.135/100 ~ 0.00135, so the 0.01 mean window is
+                -- ~7 SE: a correct sampler clears it essentially always (a 40-seed
+                -- sweep had max mean error ~0.002, ~5x inside). The variance is a
+                -- noisier second-moment estimator against an analytic value of only
+                -- ~0.0181, so it gets the looser 0.005 window, the same value the
+                -- Beta gate uses (the 40-seed sweep had max variance error ~0.0004,
+                -- ~12x inside). A mis-weighted sampler collapses toward the prior
+                -- variance 9 and misses by orders of magnitude.
+                meanTol = 0.01
+                varTol = 0.005
+            -- Hand formulas agree with the statistics reference to round-off.
+            assertBool
+                ("analytic mean matches normalDistr: " <> show analyticMean <> " vs " <> show (mean refDist))
+                (abs (analyticMean - mean refDist) < 1e-9)
+            assertBool
+                ("analytic variance matches normalDistr: " <> show analyticVar <> " vs " <> show (variance refDist))
+                (abs (analyticVar - variance refDist) < 1e-9)
+            -- The gate: the importance posterior agrees with the analytic posterior.
+            assertBool
+                ("posterior mean " <> show estMean <> " near analytic " <> show analyticMean <> " (tol " <> show meanTol <> ")")
+                (abs (estMean - analyticMean) < meanTol)
+            assertBool
+                ("posterior variance " <> show estVar <> " near analytic " <> show analyticVar <> " (tol " <> show varTol <> ")")
                 (abs (estVar - analyticVar) < varTol)
         ]
