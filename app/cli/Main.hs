@@ -44,6 +44,8 @@ import Options.Applicative (
     value,
     (<**>),
  )
+import System.Exit (ExitCode (ExitFailure), exitWith)
+import System.IO (hPutStrLn, stderr)
 import System.Random.MWC (createSystemRandom)
 import Text.Printf (printf)
 
@@ -134,8 +136,12 @@ library's 'posteriorMean'. The total weight is recovered from the same
 log-weights the library returns, so the CDF is genuinely normalized.
 -}
 weightedInterval :: Double -> Double -> V.Vector (Double, Double) -> (Double, Double)
-weightedInterval lo hi samples =
-    (quantileAt lo, quantileAt hi)
+weightedInterval lo hi samples
+    -- An empty sample has no quantiles, and maximum [] and last [] both crash.
+    -- The CLI validates particles > 0 so this is unreachable in normal use, but
+    -- a quantile of nothing is NaN, not a panic, if it ever is reached.
+    | V.null samples = (0 / 0, 0 / 0)
+    | otherwise = (quantileAt lo, quantileAt hi)
   where
     -- Sort (value, weight) pairs by value, exponentiating each log-weight
     -- relative to the max so the running sum is stable and never underflows.
@@ -152,9 +158,35 @@ weightedInterval lo hi samples =
             | acc + w >= target = x
             | otherwise = walk (acc + w) rest
 
+{- | Print @error: <msg>@ to stderr and exit 1.
+
+A bad invocation has to be detectable by the shell or CI, so a usage error goes
+to stderr with a non-zero status rather than to stdout where it would read as
+normal output and exit 0.
+-}
+dieWith :: String -> IO a
+dieWith msg = do
+    hPutStrLn stderr ("error: " <> msg)
+    exitWith (ExitFailure 1)
+
+{- | Reject parameters outside their domain before any inference runs.
+
+The Beta prior needs @a, b > 0@ to be a proper density, and the particle count
+must be positive or the importance sample is empty and its summaries (the
+weighted quantile's @maximum@ over no weights) are undefined. Catching this here
+turns a downstream crash or a NaN into a clear usage error.
+-}
+validate :: Options -> IO ()
+validate opts
+    | optParticles opts <= 0 = dieWith "particles must be a positive integer"
+    | optPriorA opts <= 0 = dieWith "prior-a must be positive"
+    | optPriorB opts <= 0 = dieWith "prior-b must be positive"
+    | otherwise = pure ()
+
 main :: IO ()
 main = do
     opts <- execParser optionsInfo
+    validate opts
     case parseFlips (optFlips opts) of
         Left err -> putStrLn ("error: " <> err)
         Right flips -> do
