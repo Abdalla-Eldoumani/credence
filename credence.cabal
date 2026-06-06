@@ -33,6 +33,7 @@ library
     exposed-modules:  Credence
                       Credence.Distribution
                       Credence.Model
+                      Credence.Trace
                       Credence.Inference.Importance
     build-depends:
         base          >=4.18 && <4.19
