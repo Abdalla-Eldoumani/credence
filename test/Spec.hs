@@ -60,6 +60,7 @@ tests =
         , mhDetailedBalanceTests
         , mhConjugateTests
         , normalNormalTests
+        , crossSeedRegressionTests
         ]
 
 {- | A structural interpreter over Sample-free models (only Pure and Observe).
@@ -846,4 +847,125 @@ normalNormalTests =
             assertBool
                 ("posterior variance " <> show estVar <> " near analytic " <> show analyticVar <> " (tol " <> show varTol <> ")")
                 (abs (estVar - analyticVar) < varTol)
+        ]
+
+{- | Three distinct fixed seeds for the cross-seed convergence test.
+
+A single fixed seed proves a run is reproducible; it does not prove the estimate
+is stable rather than right by luck on one draw. These are three different Word32
+vectors (the first is the suite's 'fixedSeed'), committed so every run is
+reproducible while still exercising three independent random streams. The
+cross-seed test asserts the per-seed estimates agree with each other and with the
+analytic posterior under both interpreters.
+-}
+crossSeeds :: [VU.Vector Word32]
+crossSeeds =
+    [ fixedSeed
+    , VU.fromList [0x1234, 0x5678, 0x9abc, 0xdef0]
+    , VU.fromList [0x0f1e, 0x2d3c, 0x4b5a, 0x6978]
+    ]
+
+{- | Cross-seed convergence sanity: the regression posterior-mean estimate is
+stable across seeds under BOTH importance sampling and MH.
+
+The companion to the Normal-Normal gate. That gate proves the posterior is right
+on one seed; this proves the estimate is not a lucky one-seed fluke, by running
+the SAME fixture ('regPoints', so the analytic @muN@ from 'regPosterior' is known)
+under three distinct fixed seeds and asserting the per-seed estimates agree with
+each other and with @muN@. It runs under both interpreters, which is also the
+operational-monad payoff in miniature: the one regression model drives importance
+sampling and MH with no change to either.
+
+For MH the acceptance rate on each seed is asserted strictly in (0,1): a chain
+that never moves or always moves would be a degenerate pass even if a mean happened
+to match. The proposal is the single-site prior proposal on the one slope, an
+independence proposal from the broad prior; against the tight posterior it accepts
+about 4 to 5 percent of the time, low but a genuine accept/reject, so the chains
+are run long with a burn-in to let that mixing average out.
+-}
+crossSeedRegressionTests :: TestTree
+crossSeedRegressionTests =
+    testGroup
+        "cross-seed convergence (regression stable across seeds under both methods)"
+        [ testCase "importance posterior mean is stable across seeds and near analytic muN" $ do
+            let
+                (analyticMean, _) = regPosterior
+                model = linearRegression regMu0 regSigma0 regSigmaL regPoints
+                n = 200000
+                -- One importance posterior-mean estimate per seed, each in ST.
+                perSeed =
+                    [ runST $ do
+                        g <- initialize seed
+                        samples <- importanceSamples n model g
+                        pure (posteriorMean samples id)
+                    | seed <- crossSeeds
+                    ]
+                spread = maximum perSeed - minimum perSeed
+                -- Tolerances. Each per-seed estimate is a self-normalized importance
+                -- mean at ESS ~ 5% of n (ESS ~ 10000 at n = 2e5), so its SE ~
+                -- sigmaN/sqrt(ESS) ~ 0.135/100 ~ 0.00135. The cross-seed spread of
+                -- three such independent estimates is a few SE, so a 0.01 window
+                -- clears a correct sampler essentially always (a 40-seed sweep had a
+                -- full-range spread ~0.004); each estimate is held within 0.01 of the
+                -- analytic muN by the same SE argument the Normal-Normal gate makes.
+                spreadTol = 0.01
+                meanTol = 0.01
+            assertBool
+                ("importance cross-seed spread " <> show spread <> " within " <> show spreadTol <> " (estimates " <> show perSeed <> ")")
+                (spread < spreadTol)
+            mapM_
+                ( \est ->
+                    assertBool
+                        ("importance per-seed mean " <> show est <> " near analytic " <> show analyticMean <> " (tol " <> show meanTol <> ")")
+                        (abs (est - analyticMean) < meanTol)
+                )
+                perSeed
+        , testCase "MH posterior mean is stable across seeds, near analytic muN, with acceptance rate in (0,1)" $ do
+            let
+                (analyticMean, _) = regPosterior
+                model = linearRegression regMu0 regSigma0 regSigmaL regPoints
+                n = 200000
+                burn = 20000
+                -- One MH chain mean (after burn-in) and acceptance rate per seed.
+                perSeed =
+                    [ runST $ do
+                        g <- initialize seed
+                        (chain, rate) <- mhChain n model g
+                        let kept = V.drop burn chain
+                            m = V.sum kept / fromIntegral (V.length kept)
+                        pure (m, rate)
+                    | seed <- crossSeeds
+                    ]
+                means = map fst perSeed
+                rates = map snd perSeed
+                spread = maximum means - minimum means
+                -- Tolerances. MH draws are autocorrelated and the prior-proposal
+                -- acceptance rate is low (~0.045), so the effective sample size is
+                -- far below the 180000 kept draws; the chain accepts ~9000 times, so
+                -- ESS is on that order and the mean SE ~ sigmaN/sqrt(9000) ~ 0.0014.
+                -- The cross-seed spread and each per-seed deviation from muN are a few
+                -- such SE, so a 0.02 window (looser than the importance window, as the
+                -- MH conjugate gate is looser than the importance gate) clears a
+                -- correct chain essentially always: a 12-seed simulation had spread
+                -- ~0.005 and max deviation from muN ~0.003, ~7x inside.
+                spreadTol = 0.02
+                meanTol = 0.02
+            -- Each chain is a genuine accept/reject, not degenerate.
+            mapM_
+                ( \rate ->
+                    assertBool
+                        ("MH acceptance rate strictly in (0,1): " <> show rate)
+                        (rate > 0 && rate < 1)
+                )
+                rates
+            assertBool
+                ("MH cross-seed spread " <> show spread <> " within " <> show spreadTol <> " (means " <> show means <> ")")
+                (spread < spreadTol)
+            mapM_
+                ( \m ->
+                    assertBool
+                        ("MH per-seed mean " <> show m <> " near analytic " <> show analyticMean <> " (tol " <> show meanTol <> ")")
+                        (abs (m - analyticMean) < meanTol)
+                )
+                means
         ]
