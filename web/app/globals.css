@@ -1,0 +1,142 @@
+/*
+  Design tokens for credence. These mirror the design notes exactly.
+  Named fonts (Fraunces, Inter, IBM Plex Mono) are wired with next/font in the
+  typography stage; until then the stacks fall back to system fonts so the
+  shell builds and renders without a font dependency.
+*/
+
+:root {
+  /* Color */
+  --bg: #15120e;
+  --surface: #1e1a15;
+  --surface-raised: #262019;
+  --border-subtle: #322a20;
+  --border: #423829;
+
+  --text: #f2ede4;
+  --text-secondary: #b8ae9e;
+  --text-muted: #897e6b;
+
+  --accent: #e3a857;
+  --accent-strong: #f0b968;
+  --accent-muted: rgba(227, 168, 87, 0.16);
+
+  --focus-ring: #e3a857;
+
+  /* Visualization color */
+  --viz-posterior: #e3a857;
+  --viz-posterior-fill: rgba(227, 168, 87, 0.16);
+  --viz-analytic: rgba(242, 237, 228, 0.95);
+  --viz-band: rgba(227, 168, 87, 0.14);
+  --viz-data: #b8ae9e;
+  --viz-grid: #322a20;
+  --viz-axis: #897e6b;
+  --viz-trace: rgba(227, 168, 87, 0.8);
+  --viz-particle: #e3a857;
+
+  /* Typography */
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+
+  --text-display-xl: clamp(2.5rem, 1.8rem + 3.5vw, 4rem);
+  --text-display-l: clamp(2rem, 1.6rem + 2vw, 3rem);
+  --text-heading: clamp(1.5rem, 1.3rem + 1vw, 2rem);
+  --text-title: 1.25rem;
+  --text-body-l: 1.125rem;
+  --text-body: 1rem;
+  --text-small: 0.875rem;
+  --text-caption: 0.8125rem;
+  --text-num: 0.9375rem;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Motion */
+  --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-entrance: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-micro: 120ms;
+  --dur-short: 200ms;
+  --dur-medium: 320ms;
+  --dur-long: 600ms;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
