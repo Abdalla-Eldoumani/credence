@@ -21,7 +21,7 @@ import Credence.Model (Model (..), coinModel, observe, sample)
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import Data.Word (Word32)
-import Statistics.Distribution (logDensity, logProbability)
+import Statistics.Distribution (logDensity, logProbability, mean, variance)
 import Statistics.Distribution.Beta (betaDistr)
 import Statistics.Distribution.Binomial (binomial)
 import Statistics.Distribution.Gamma (gammaDistr)
@@ -51,6 +51,7 @@ tests =
         , momentTests
         , modelTests
         , importanceTests
+        , conjugateTests
         ]
 
 {- | A structural interpreter over Sample-free models (only Pure and Observe).
@@ -378,4 +379,81 @@ importanceTests =
             assertBool
                 ("prior mean estimate " <> show est <> " near " <> show target <> " (tol " <> show tol <> ")")
                 (abs (est - target) < tol)
+        ]
+
+{- | THE stage 1 gate: conjugate-analytic agreement on the coin model.
+
+This is the single most important test in the project. A wrong sampler returns a
+smooth, plausible posterior, so the only proof that importance sampling is correct
+is that on a model with a closed-form answer it reproduces that answer. The coin
+model is Beta-Bernoulli conjugate: prior Beta(a, b) with h heads and t tails has
+posterior exactly Beta(a + h, b + t). The gate runs importance sampling on
+@coinModel a b flips@ under a fixed ST seed and asserts the weighted posterior
+matches the analytic Beta(a + h, b + t) in BOTH mean and variance. Mean alone is
+not enough: a sampler can hit the mean while getting the spread wrong, so the
+variance is checked too. Per the correctness discipline, stage 2 does not
+begin until this holds.
+
+The analytic moments are computed from the formulas (mean @(a+h)/(a+b+h+t)@,
+variance @a'b'/((a'+b')^2 (a'+b'+1))@) and independently cross-checked against
+@statistics@' @betaDistr a' b'@, so a typo in either path is caught by the other.
+-}
+conjugateTests :: TestTree
+conjugateTests =
+    testGroup
+        "conjugate-analytic agreement (the stage 1 gate)"
+        [ testCase "coin model importance posterior matches Beta(a+h, b+t) in mean and variance" $ do
+            let
+                -- Prior Beta(2,2) and a fixed flip sequence: 7 heads, 3 tails.
+                (a, b) = (2, 2) :: (Double, Double)
+                heads = 7 :: Int
+                tails = 3 :: Int
+                flips = replicate heads True ++ replicate tails False
+                -- Posterior Beta(a', b') with a' = a + h, b' = b + t.
+                a' = a + fromIntegral heads
+                b' = b + fromIntegral tails
+                -- Analytic posterior moments, by the closed-form Beta formulas.
+                analyticMean = a' / (a' + b')
+                analyticVar = (a' * b') / ((a' + b') * (a' + b') * (a' + b' + 1))
+                -- Independent cross-check: the same posterior via statistics. If
+                -- the hand formulas above and this reference disagree, one is wrong.
+                refDist = betaDistr a' b'
+                -- Importance sampling on the coin model under a FIXED ST seed.
+                n = 200000
+                samples = runST $ do
+                    g <- initialize fixedSeed
+                    importanceSamples n (coinModel a b flips) g
+                -- Estimated posterior mean and variance from the weighted sample.
+                -- Variance via E[theta^2] - (E[theta])^2 on the normalized weights.
+                estMean = posteriorMean samples id
+                estSecond = posteriorMean samples (\x -> x * x)
+                estVar = estSecond - estMean * estMean
+                -- Tolerances. The proposal is the prior Beta(2,2); the target is
+                -- the posterior Beta(9,5), mean 9/14 ~ 0.643, sd ~ 0.124. The
+                -- likelihood theta^7 (1-theta)^3 is mild, so the effective sample
+                -- size is a healthy fraction of n; even at ESS ~ n/10 = 2e4 the
+                -- self-normalized mean SE ~ sd/sqrt(ESS) ~ 0.124/141 ~ 0.0009, so
+                -- the 0.01 mean window is ~10 SE: a correct sampler clears it
+                -- essentially always. The variance is a second-moment estimator
+                -- with larger sampling error and the analytic variance is only
+                -- ~0.0153, so its window is the looser 0.005 (still well inside
+                -- what a correct sampler delivers, while a mis-weighted sampler --
+                -- which collapses toward the prior variance ~0.042 -- misses by
+                -- far more than 0.005).
+                meanTol = 0.01
+                varTol = 0.005
+            -- Hand formulas agree with the statistics reference to round-off.
+            assertBool
+                ("analytic mean matches betaDistr: " <> show analyticMean <> " vs " <> show (mean refDist))
+                (abs (analyticMean - mean refDist) < 1e-9)
+            assertBool
+                ("analytic variance matches betaDistr: " <> show analyticVar <> " vs " <> show (variance refDist))
+                (abs (analyticVar - variance refDist) < 1e-9)
+            -- The gate: importance posterior agrees with the analytic posterior.
+            assertBool
+                ("posterior mean " <> show estMean <> " near analytic " <> show analyticMean <> " (tol " <> show meanTol <> ")")
+                (abs (estMean - analyticMean) < meanTol)
+            assertBool
+                ("posterior variance " <> show estVar <> " near analytic " <> show analyticVar <> " (tol " <> show varTol <> ")")
+                (abs (estVar - analyticVar) < varTol)
         ]
