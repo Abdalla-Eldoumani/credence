@@ -31,12 +31,14 @@ library
     -- Add new modules here as they are built. Keep this list in sync with
     -- the files under src/. The the project notes self-update rule covers this.
     exposed-modules:  Credence
+                      Credence.Distribution
     build-depends:
         base          >=4.18 && <4.19
       , containers     ==0.6.7
       , vector         ==0.13.1.0
       , mwc-random     ==0.15.2.0
       , math-functions ==0.3.4.4
+      , random         ==1.2.1.3
 
 executable credence
     import:           warnings
