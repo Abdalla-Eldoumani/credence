@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 # Statistical tests are made stable by fixed seeds inside the suite itself (see
 # the correctness discipline), not by environment configuration. CI runs on
