@@ -27,7 +27,14 @@ import Credence.Inference.SMC (
  )
 import Credence.Model (Model (..), coinModel, observe, sample)
 import Credence.Model.Localization (localize)
+import Credence.Model.Mixture (gaussianMixtureCollapsed)
 import Credence.Model.Regression (linearRegression)
+import Credence.Model.Tracking (
+    trackR,
+    trackingModel,
+    trajectoryObservations,
+    trueTrajectory,
+ )
 import Credence.Trace (traceAddresses, traceModel)
 import Credence.Wire (
     Batch (..),
@@ -39,6 +46,7 @@ import Credence.Wire (
     Summary (..),
  )
 import Data.Aeson (decode, encode)
+import Data.List (sort)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
@@ -82,6 +90,8 @@ tests =
         , crossSeedRegressionTests
         , localizationRecoveryTests
         , smcSanityTests
+        , trackingRecoveryTests
+        , mixtureRecoveryTests
         , wireTests
         ]
 
@@ -1339,6 +1349,231 @@ smcSanityTests =
                         (abs (fsVariance fs - kp) < varTol)
                 )
                 paired
+        ]
+
+{- | The tracking seed for the planted trajectory: the suite's 'fixedSeed', so the
+walk the filter is judged against is the same every run.
+-}
+trackTrajectorySeed :: VU.Vector Word32
+trackTrajectorySeed = fixedSeed
+
+{- | A distinct seed for the observation noise, so the noisy reads are independent of
+the walk rather than sharing its stream. A second fixed vector keeps the
+observations deterministic while uncorrelated with the trajectory.
+-}
+trackObservationSeed :: VU.Vector Word32
+trackObservationSeed = VU.fromList [0x7472, 0x6163, 0x6b6f, 0x6273]
+
+{- | A third fixed seed for the particle filter itself, so the filtering run is
+reproducible and independent of the data-generating streams.
+-}
+trackFilterSeed :: VU.Vector Word32
+trackFilterSeed = VU.fromList [0x7466, 0x696c, 0x7465, 0x7273]
+
+{- | THE tracking gate: the particle filter's estimate follows the moving target
+under a fixed seed (the spec's programmatic gate).
+
+The model-level oracle for the tracking demo, the particle-filter analogue of the
+localization recovery test: no closed form is assumed, the planted trajectory is the
+oracle. A hidden random-walk target is planted under a fixed seed, the matching noisy
+observations are generated and fed to 'particleFilter', and the filter's per-step
+filtering mean must FOLLOW the true trajectory. Two assertions, both against the
+hidden states the filter never sees directly:
+
+1. The mean absolute per-step tracking error stays small. The filter sees only the
+   noisy observations @y_t ~ Normal(x_t, trackR)@, so its filtering mean cannot equal
+   the hidden @x_t@ exactly; the right target is that, averaged over the run, the
+   estimate sits within a fraction of the observation noise of the truth, the
+   signature of a filter that tracks rather than drifts.
+2. The final estimate is near the final true state, so the filter is locked on at the
+   end of the run, not merely close on average while lagging.
+
+This is the third correctness treatment of the SMC (after the ESS and
+unbiased-resampling oracles and the Kalman known-answer gate from 05-01), now at the
+model level the CONTEXT asks of the tracking demo: the estimate follows the target.
+
+Tolerances, in the standard-error discipline of the localization gate. The steady-
+state filtering posterior for a random walk with @q = trackQ = 0.6@ and
+@r = trackR = 1.0@ has standard deviation on the order of @sqrt(r) ~ 1@ (the
+steady-state filtering variance solves @p = (p + q) r / (p + q + r)@, giving
+@p ~ 0.59@, sd @~ 0.77@). With many particles the per-step filtering mean is a
+low-variance estimate of that posterior mean, whose own distance from the hidden
+state is itself about that posterior sd, so a mean absolute tracking error around
+@0.77@ is what a CORRECT filter delivers. The window is @1.2@ (about 1.5x the
+posterior sd and well above the per-step estimator noise at @count = 100000@): a
+filter that tracks clears it essentially always, while a filter that ignored the
+observation weight or never resampled would drift away from the walk and blow past
+it (the 05-01 teeth check showed a weight-dropping filter misses the Kalman track by
+~9x its tolerance, the same failure this would catch). The final-state window is the
+looser @2.0@ (about 2.6 posterior sd), since a single step is noisier than the run
+average; it still pins the filter to the end of the walk rather than letting it sit
+near the prior.
+-}
+trackingRecoveryTests :: TestTree
+trackingRecoveryTests =
+    testGroup
+        "tracking planted-trajectory recovery (the tracking gate, the spec)"
+        [ testCase "the filter estimate follows the moving target under a fixed seed" $ do
+            let
+                -- A planted random-walk trajectory of moderate length, and the noisy
+                -- observations of it, both under fixed seeds so the run is deterministic.
+                steps = 40
+                trueStates = trueTrajectory trackTrajectorySeed steps
+                observations = trajectoryObservations trackObservationSeed trueStates
+                -- Enough particles that the per-step filtering mean is a low-variance
+                -- estimate of the filtering posterior mean; threshold 0.5 resamples
+                -- when fewer than half the particles effectively contribute. The mean
+                -- tracking error is dominated by the observation-noise floor, not the
+                -- particle count (it is flat from 5000 to 20000 particles at this
+                -- model), so 5000 is ample and keeps the suite fast.
+                count = 5000 :: Int
+                threshold = 0.5 :: Double
+                -- The particle filter under a FIXED ST seed, over the observations only.
+                filterMeans = runST $ do
+                    g <- initialize trackFilterSeed
+                    fmap (map fsMean . V.toList) (particleFilter count threshold trackingModel observations g)
+                -- The per-step tracking errors against the hidden states the filter
+                -- never saw, and their mean absolute value (the average tracking error).
+                errors = zipWith (\est true -> abs (est - true)) filterMeans trueStates
+                meanAbsError = sum errors / fromIntegral (length errors)
+                -- The final estimate against the final true state: the filter must be
+                -- locked on at the end, not just close on average.
+                finalError = abs (last filterMeans - last trueStates)
+                -- Windows justified above in terms of the steady-state filtering sd
+                -- (~0.77 for q=0.6, r=1.0) and the observation noise trackR.
+                meanErrTol = 1.2
+                finalErrTol = 2.0
+            assertBool
+                ("mean absolute tracking error " <> show meanAbsError <> " within " <> show meanErrTol <> " (steady-state filtering sd ~0.77, obs noise " <> show trackR <> ")")
+                (meanAbsError < meanErrTol)
+            assertBool
+                ("final estimate " <> show (last filterMeans) <> " near final true state " <> show (last trueStates) <> " (tol " <> show finalErrTol <> ")")
+                (finalError < finalErrTol)
+        ]
+
+{- | The planted clusters for the mixture recovery oracle: three well-separated means
+and the mixing weights, the truth the recovered means are compared against.
+
+The means are spread far apart relative to the cluster spread 'mixSigma' (gaps of 6
+and 5 against sigma 0.7, about 8 sigma), so each synthetic point's likelihood is
+dominated by the nearest cluster and the posterior over the means concentrates
+sharply on the planted values, which is what makes the planted means a sharp oracle.
+The weights are equal, so each cluster is equally represented.
+-}
+plantedMeans :: [Double]
+plantedMeans = [-6.0, 0.0, 5.0]
+
+mixWeights :: [Double]
+mixWeights = [1.0, 1.0, 1.0]
+
+{- | The known shared cluster standard deviation. Small relative to the gaps between
+'plantedMeans' so the clusters are well separated and the recovery target is sharp.
+-}
+mixSigma :: Double
+mixSigma = 0.7
+
+{- | The mixture prior parameters: a broad Normal on each cluster mean, wide enough
+to cover all three planted means without favoring any, the same broad-prior framing
+the localization model uses.
+-}
+mixMu0, mixSigma0 :: Double
+mixMu0 = 0.0
+mixSigma0 = 10.0
+
+{- | Synthetic data with the planted clusters: points tightly clustered around each
+of 'plantedMeans', LITERAL so every run is deterministic under the fixed seed. Each
+cluster's points are symmetric about its planted mean (the deviations sum to zero),
+so the cluster's sample mean is exactly the planted value and the recovery target is
+the planted mean itself rather than a finite-sample offset of it. Five points per
+cluster, fifteen in all, enough to pin each well-separated cluster.
+-}
+mixturePoints :: [Double]
+mixturePoints =
+    -- Around -6.0: five points summing to -30.0 (mean -6.0).
+    [-6.5, -5.5, -6.3, -5.7, -6.0]
+        -- Around 0.0: five points summing to 0.0 (mean 0.0).
+        ++ [-0.5, 0.5, -0.3, 0.3, 0.0]
+        -- Around 5.0: five points summing to 25.0 (mean 5.0).
+        ++ [4.6, 5.4, 4.7, 5.3, 5.0]
+
+{- | THE mixture gate: planted-cluster recovery under a fixed seed, with label
+switching handled (the spec, correctness oracle 4).
+
+The model-level oracle for the Gaussian mixture: no closed form, the planted cluster
+means are the oracle. Well-separated clusters are planted ('plantedMeans'), synthetic
+data is generated near them ('mixturePoints'), importance sampling is run on
+'gaussianMixtureCollapsed' under a fixed seed, and the posterior must recover the
+planted means. This is also the fourth model running under the importance interpreter
+unchanged, the operational-monad payoff: the mixture is built only from 'sample' and
+'observe' over the unchanged 'Credence.Model'.
+
+Why the COLLAPSED form. The generative 'gaussianMixture' draws a categorical
+assignment per point; under importance sampling that proposal almost never lands
+every assignment right, so the weights concentrate on a single particle (effective
+sample size near 1) and no particle budget recovers the means (measured directly: at
+@n = 400000@ the ESS is 1.0 and the means come back near their lucky single-particle
+draw). 'gaussianMixtureCollapsed' sums the assignment out analytically, which is
+exact and leaves the same posterior on the means but removes the lottery, so the ESS
+is healthy (tens to hundreds) and the means are recoverable. Both are 'sample'/
+'observe' over the unchanged monad; the collapsed one is the Rao-Blackwellized
+version of the very same model.
+
+CRITICAL: LABEL SWITCHING, handled by a WITHIN-PARTICLE sort. The mixture posterior
+is invariant to permuting the cluster labels, so the @k@ mean-latents are
+EXCHANGEABLE: each coordinate's marginal posterior is the SAME mixture over all
+clusters, and a per-coordinate posterior mean averages the clusters together (it
+comes out near the grand mean, recovering none of them; measured directly, the
+unsorted per-coordinate means are all near @(-6 + 0 + 5)/3 ~ -0.33@). The
+canonicalization the correctness discipline prescribes is to impose an
+identifiability constraint by ordering: SORT each particle's mean vector, then take
+the posterior mean of each sorted coordinate, so the j-th sorted coordinate's
+posterior mean lands on the j-th planted mean. The projection @\\ms -> sort ms !! j@
+is that within-particle sort; 'posteriorMean' then weights it across particles. The
+recovered values are finally compared to the sorted planted means. Without this sort
+the assertion would test a property the posterior does not have.
+
+Tolerance, in the standard-error discipline of the other recovery gates. With the
+assignment collapsed the proposal is the broad prior @Normal(0, 10)@ and the
+likelihood (five tight Normal factors per well-separated cluster at @sigma = 0.7@) is
+sharp but no longer degenerate; the per-cluster posterior sd is about
+@sigma / sqrt(5) ~ 0.31@ and the clusters are separated by about 8 sigma, so the
+sorted-coordinate posterior means land within a few hundredths of the planted means
+(measured: @[-6.00, 0.02, 5.03]@ at @n = 200000@). A @0.3@ window (about 1x the
+per-cluster posterior sd, ~10x the observed error) clears a correct sampler
+essentially always while a mis-weighted sampler, which would leave the means near the
+prior mean 0, misses the outer clusters by 5 to 6 units, far past it.
+-}
+mixtureRecoveryTests :: TestTree
+mixtureRecoveryTests =
+    testGroup
+        "gaussian mixture planted-cluster recovery (the mixture gate, the spec)"
+        [ testCase "importance posterior recovers the planted cluster means, sorted (label switching)" $ do
+            let
+                k = length plantedMeans
+                -- Importance sampling on the COLLAPSED mixture under a FIXED ST seed.
+                -- The model returns the k-vector of cluster means; many particles so
+                -- the three-latent posterior mean is stable.
+                n = 200000
+                samples = runST $ do
+                    g <- initialize fixedSeed
+                    importanceSamples n (gaussianMixtureCollapsed mixMu0 mixSigma0 mixWeights mixSigma mixturePoints) g
+                -- LABEL SWITCHING: sort each particle's mean vector, THEN take the
+                -- posterior mean of each sorted coordinate. The within-particle sort
+                -- breaks the exchangeability of the means, so the j-th sorted
+                -- coordinate identifies the j-th cluster (a per-coordinate mean
+                -- without the sort would average all clusters together).
+                recovered = [posteriorMean samples (\ms -> sort ms !! j) | j <- [0 .. k - 1]]
+                plantedSorted = sort plantedMeans
+                -- Window justified above (~1x the per-cluster posterior sd ~0.31,
+                -- about 10x the observed recovery error).
+                tol = 0.3
+            mapM_
+                ( \(rec, planted) ->
+                    assertBool
+                        ("recovered cluster mean " <> show rec <> " near planted " <> show planted <> " (sorted, tol " <> show tol <> ")")
+                        (abs (rec - planted) < tol)
+                )
+                (zip recovered plantedSorted)
         ]
 
 {- | The wire format round-trips through aeson, so the engine and the browser
