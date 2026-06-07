@@ -35,6 +35,7 @@ module Credence.Wire (
     Method (..),
     Dataset (..),
     RunRequest (..),
+    RunStarted (..),
     Summary (..),
     Batch (..),
     StreamEvent (..),
@@ -53,6 +54,7 @@ import Data.Aeson.Types (
     camelTo2,
  )
 import Data.Char (toLower)
+import Data.Text (Text)
 import GHC.Generics (Generic)
 
 {- | Drop a record-field prefix and lower the next initial, so @summaryBatchIndex@
@@ -153,6 +155,24 @@ instance ToJSON RunRequest where
 
 instance FromJSON RunRequest where
     parseJSON = genericParseJSON (recordOptions "runRequest")
+
+{- | The response a run POST returns: the 'RunId' the server allocated for the run
+that just started. The client streams this run by opening @\/stream\/\<runId\>@.
+Encodes as @{"runId":"3"}@. The RunId is an opaque text identifier (the server
+renders it from a monotonic counter); the client treats it as a stable handle and
+does not parse it. This is the handle that makes concurrent runs addressable: each
+POST returns a distinct RunId, so two runs in flight stream independently.
+-}
+newtype RunStarted = RunStarted
+    { runStartedRunId :: Text
+    }
+    deriving (Eq, Show, Generic)
+
+instance ToJSON RunStarted where
+    toJSON = genericToJSON (recordOptions "runStarted")
+
+instance FromJSON RunStarted where
+    parseJSON = genericParseJSON (recordOptions "runStarted")
 
 {- | A running summary of the posterior as it converges: the batch index it was
 computed at, the posterior mean and variance, and two method-specific diagnostics
