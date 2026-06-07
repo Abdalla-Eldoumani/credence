@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { LivePanel } from "@/components/LivePanel";
 import { RegressionVisualizer, SAMPLE_POINTS } from "@/components/RegressionVisualizer";
+import { Traceplot, type TraceplotHandle } from "@/components/Traceplot";
 import type { Method } from "@/lib/stream";
 import styles from "./regression.module.css";
 
@@ -12,6 +13,18 @@ export default function RegressionPage() {
   // Bumping this token tells the visualizer to (re)start a run with the current
   // method and points. 0 means no run has been requested yet (empty state).
   const [runToken, setRunToken] = useState(0);
+
+  // The traceplot is fed from the visualizer's single stream subscription so the
+  // page opens no second EventSource: the visualizer taps each batch up to here.
+  const traceplotRef = useRef<TraceplotHandle | null>(null);
+
+  const handleRunStart = useCallback(() => {
+    traceplotRef.current?.reset();
+  }, []);
+
+  const handleBatchDraws = useCallback((draws: number[]) => {
+    traceplotRef.current?.push(draws);
+  }, []);
 
   const addPoint = useCallback(() => {
     // Append near the origin so it lands on the canvas; the user drags it into
@@ -100,7 +113,10 @@ export default function RegressionPage() {
         points={points}
         onPointsChange={setPoints}
         runToken={runToken}
+        onRunStart={handleRunStart}
+        onBatchDraws={handleBatchDraws}
       />
+      <Traceplot ref={traceplotRef} label="slope" />
     </LivePanel>
   );
 }
