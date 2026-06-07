@@ -309,8 +309,9 @@ export function RegressionVisualizer({
     teardown();
 
     const begin = async () => {
+      let runId: string;
       try {
-        await startRegressionRun(engineBaseUrl, request);
+        runId = await startRegressionRun(engineBaseUrl, request);
       } catch (error) {
         if (cancelled) return;
         setErrorMessage(error instanceof Error ? error.message : "could not start the run");
@@ -319,7 +320,7 @@ export function RegressionVisualizer({
       }
       if (cancelled) return;
 
-      subscriptionRef.current = subscribeRun(engineBaseUrl, {
+      subscriptionRef.current = subscribeRun(engineBaseUrl, runId, {
         onSummary: (summary) => {
           if (cancelled) return;
           setMeanReadout(summary.mean);
@@ -502,15 +503,16 @@ export function RegressionVisualizer({
       samples: REQUESTED_SAMPLES,
     };
     void (async () => {
+      let runId: string;
       try {
-        await startRegressionRun(engineBaseUrl, request);
+        runId = await startRegressionRun(engineBaseUrl, request);
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "could not start the run");
         setState("error");
         return;
       }
       teardown();
-      subscriptionRef.current = subscribeRun(engineBaseUrl, {
+      subscriptionRef.current = subscribeRun(engineBaseUrl, runId, {
         onSummary: (summary) => {
           setMeanReadout(summary.mean);
           setBatchReadout(summary.batchIndex);
