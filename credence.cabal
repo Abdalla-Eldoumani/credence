@@ -38,6 +38,7 @@ library
                       Credence.Trace
                       Credence.Inference.Importance
                       Credence.Inference.MH
+                      Credence.Inference.SMC
                       Credence.Wire
     build-depends:
         base          >=4.18 && <4.19
