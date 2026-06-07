@@ -35,6 +35,8 @@ library
                       Credence.Model
                       Credence.Model.Regression
                       Credence.Model.Localization
+                      Credence.Model.Tracking
+                      Credence.Model.Mixture
                       Credence.Trace
                       Credence.Inference.Importance
                       Credence.Inference.MH
