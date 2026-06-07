@@ -25,9 +25,14 @@ export type Summary = {
 };
 
 // A thinned subsample of latent draws (<= 60), paired with its summary by index.
+// weights, when present, are the NORMALIZED per-draw importance weights aligned with
+// draws (same length, same order), the opacity-by-weight input the cloud reads; it
+// is null for MH, whose chain has no per-draw importance weight. Absent on the
+// coin/regression demos, which ignore it.
 export type Batch = {
   batchIndex: number;
   draws: number[];
+  weights?: number[] | null;
 };
 
 // The tagged StreamEvent union. EvDone is terminal (the stream loop stops on it).
@@ -44,7 +49,13 @@ export type CoinDataset = { tag: "Coin"; flips: boolean[] };
 // the slope w, and the posterior band is the lines y = w_i * x for sampled w_i.
 export type RegressionDataset = { tag: "Regression"; points: [number, number][] };
 
-export type Dataset = CoinDataset | RegressionDataset;
+// The localization dataset: noisy sensor readings of a hidden source position. The
+// wire shape matches the server (Localization{readings:[...]}); the latent is the
+// source position theta, and the posterior cloud is the sampled theta_i with their
+// importance weights.
+export type LocalizationDataset = { tag: "Localization"; readings: number[] };
+
+export type Dataset = CoinDataset | RegressionDataset | LocalizationDataset;
 
 // The POST body that starts a run.
 export type RunRequest = {
@@ -175,4 +186,15 @@ export async function startRun(baseUrl: string, request: RunRequest): Promise<st
  */
 export async function startRegressionRun(baseUrl: string, request: RunRequest): Promise<string> {
   return postRun(baseUrl, "/run/regression", request);
+}
+
+/**
+ * Start a localization run on the engine. POSTs the RunRequest to /run/localization
+ * (which the server matches to its Localization dataset) and resolves to the RunId.
+ * The stream half is shared with the other demos: subscribeRun(baseUrl, runId, ...)
+ * drains the run named by that RunId, and its batches carry per-draw weights the
+ * cloud scales particle opacity by.
+ */
+export async function startLocalizationRun(baseUrl: string, request: RunRequest): Promise<string> {
+  return postRun(baseUrl, "/run/localization", request);
 }
