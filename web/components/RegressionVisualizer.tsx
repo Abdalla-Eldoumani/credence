@@ -64,10 +64,12 @@ type RegressionVisualizerProps = {
   // Optional taps on the single stream subscription so siblings (the traceplot and
   // diagnostics) can mount without opening a second EventSource. onRunStart fires
   // when a fresh run begins (reset point), onBatchDraws carries each slope
-  // subsample, onSummary carries each running summary.
+  // subsample, onSummary carries each running summary, onRunDone fires on the
+  // terminal event so the diagnostics can flag a not-converged run.
   onRunStart?: () => void;
   onBatchDraws?: (draws: number[]) => void;
   onSummary?: (summary: Summary) => void;
+  onRunDone?: () => void;
 };
 
 const toPixelX = (dataX: number): number =>
@@ -89,6 +91,7 @@ export function RegressionVisualizer({
   onRunStart,
   onBatchDraws,
   onSummary,
+  onRunDone,
 }: RegressionVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<BandRenderer | null>(null);
@@ -103,6 +106,8 @@ export function RegressionVisualizer({
   onBatchDrawsRef.current = onBatchDraws;
   const onSummaryRef = useRef(onSummary);
   onSummaryRef.current = onSummary;
+  const onRunDoneRef = useRef(onRunDone);
+  onRunDoneRef.current = onRunDone;
 
   const [state, setState] = useState<VizState>("empty");
   const [meanReadout, setMeanReadout] = useState<number | null>(null);
@@ -289,6 +294,7 @@ export function RegressionVisualizer({
         onDone: () => {
           if (cancelled) return;
           setState(sawDataRef.current ? "converged" : "empty");
+          onRunDoneRef.current?.();
         },
         onReconnecting: () => {
           if (cancelled) return;
@@ -409,7 +415,10 @@ export function RegressionVisualizer({
           onBatchDrawsRef.current?.(batch.draws);
           setState((prev) => (prev === "reconnecting" ? "streaming" : prev));
         },
-        onDone: () => setState(sawDataRef.current ? "converged" : "empty"),
+        onDone: () => {
+          setState(sawDataRef.current ? "converged" : "empty");
+          onRunDoneRef.current?.();
+        },
         onReconnecting: () => setState("reconnecting"),
         onError: (error) => {
           setErrorMessage(error instanceof Error ? error.message : "the stream dropped");
