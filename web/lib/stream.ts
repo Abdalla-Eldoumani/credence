@@ -34,10 +34,17 @@ export type StreamEvent =
 // The coin dataset, a tagged object because it carries fields.
 export type CoinDataset = { tag: "Coin"; flips: boolean[] };
 
+// The regression dataset: observed [x, y] points the slope is fit through. The
+// wire shape matches the 03-01 server (Regression{points:[[x,y]]}); the latent is
+// the slope w, and the posterior band is the lines y = w_i * x for sampled w_i.
+export type RegressionDataset = { tag: "Regression"; points: [number, number][] };
+
+export type Dataset = CoinDataset | RegressionDataset;
+
 // The POST body that starts a run.
 export type RunRequest = {
   method: Method;
-  dataset: CoinDataset;
+  dataset: Dataset;
   samples: number;
 };
 
@@ -120,13 +127,11 @@ export function subscribeRun(baseUrl: string, handlers: StreamHandlers): Subscri
   };
 }
 
-/**
- * Start a coin run on the engine. POSTs the RunRequest to /run/coin (this cancels
- * any prior run and spawns the worker). Resolves when the engine returns; rejects
- * on a non-2xx so the caller can show the error state.
- */
-export async function startRun(baseUrl: string, request: RunRequest): Promise<void> {
-  const response = await fetch(`${baseUrl}/run/coin`, {
+// POST a RunRequest to one of the engine's /run/* routes. The route fixes which
+// dataset the server expects (coin vs regression), so the caller picks the path.
+// A non-2xx rejects with the engine's reason so the caller can show an error.
+async function postRun(baseUrl: string, path: string, request: RunRequest): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
@@ -135,4 +140,23 @@ export async function startRun(baseUrl: string, request: RunRequest): Promise<vo
     const reason = await response.text().catch(() => "");
     throw new Error(`engine rejected the run (${response.status}): ${reason}`.trim());
   }
+}
+
+/**
+ * Start a coin run on the engine. POSTs the RunRequest to /run/coin (this cancels
+ * any prior run and spawns the worker). Resolves when the engine returns; rejects
+ * on a non-2xx so the caller can show the error state.
+ */
+export async function startRun(baseUrl: string, request: RunRequest): Promise<void> {
+  return postRun(baseUrl, "/run/coin", request);
+}
+
+/**
+ * Start a regression run on the engine. POSTs the RunRequest to /run/regression
+ * (which the server matches to its Regression dataset). The stream half is shared
+ * with the coin demo: subscribeRun is identical, since /stream serves whichever
+ * run is active.
+ */
+export async function startRegressionRun(baseUrl: string, request: RunRequest): Promise<void> {
+  return postRun(baseUrl, "/run/regression", request);
 }
