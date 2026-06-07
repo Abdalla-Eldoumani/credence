@@ -46,7 +46,9 @@ two-mode shape every interpreter shares.
 module Credence.Inference.SMC (
     StateSpace (..),
     FilterStep (..),
+    CloudStep (..),
     particleFilter,
+    particleCloud,
     effectiveSampleSize,
     systematicResample,
 ) where
@@ -268,3 +270,87 @@ particleFilter count threshold ss observations gen = do
             else
                 -- Keep the weighted population; carry the log-weights forward.
                 foldStep (propagated, updatedLogWeights, step : steps) rest
+
+{- | One step of the filtering output WITH the weighted particle population, for the
+live cloud the visualizer renders.
+
+'FilterStep' summarizes a step in three numbers; a cloud needs the particles
+themselves. 'CloudStep' adds the post-update particle population to the same summary:
+the scalar projection of each particle's state and its NORMALIZED weight, both taken
+at the same point the 'FilterStep' moments are (after the observation update, before
+any resample), so the cloud the client paints is the genuine filtering population
+that produced the step's mean. The two vectors are aligned (@csWeights ! i@ is the
+weight of @csStates ! i@) and sum-to-one normalized, exactly the opacity-by-weight
+input the existing cloud reads. No raw log-weight is exposed; the weights are the
+same normalized probabilities 'normalizedLogWeights' produces.
+-}
+data CloudStep = CloudStep
+    { csStep :: !FilterStep
+    -- ^ The scalar filtering summary at this step (mean, variance, ESS).
+    , csStates :: !(VU.Vector Double)
+    -- ^ The scalar projection of each particle's state, post-update.
+    , csWeights :: !(VU.Vector Double)
+    -- ^ The normalized weight of each particle, aligned with 'csStates'.
+    }
+    deriving (Eq, Show)
+
+{- | Run a particle filter and return the weighted particle population per step, the
+cloud variant of 'particleFilter'.
+
+Identical to 'particleFilter' in dynamics (the same propagate, reweight in log-space,
+ESS, systematic-resample-below-threshold loop, with the moments taken before any
+resample), but each step records a 'CloudStep': the 'FilterStep' summary plus the
+post-update particle states and their normalized weights. This is what the live
+tracking demo streams so the client can draw the particle cloud following the target,
+with each particle's opacity scaled by its weight; 'particleFilter' returns only the
+summaries and is kept as the lean path the oracles run against. The generator is
+threaded left to right exactly as in 'particleFilter', so a fixed seed makes the run
+deterministic.
+-}
+particleCloud ::
+    (Real s, StatefulGen g m) =>
+    -- | Number of particles @N@.
+    Int ->
+    -- | ESS-resample threshold as a fraction of @N@ (e.g. @0.5@).
+    Double ->
+    -- | The state-space model.
+    StateSpace s ->
+    -- | The scalar observation sequence.
+    [Double] ->
+    g ->
+    m (V.Vector CloudStep)
+particleCloud count threshold ss observations gen = do
+    initialStates <- V.fromList <$> replicateM count (sampleDist (ssInit ss) gen)
+    let initialLogWeights = VU.replicate count 0
+    (_, _, stepsRev) <- foldStep (initialStates, initialLogWeights, []) observations
+    pure (V.fromList (reverse stepsRev))
+  where
+    n = fromIntegral count :: Double
+    resampleBelow = threshold * n
+
+    foldStep state [] = pure state
+    foldStep (states, logWeights, steps) (y : rest) = do
+        propagated <- V.generateM count $ \i ->
+            sampleDist (ssTransition ss (states V.! i)) gen
+        let
+            updatedLogWeights =
+                VU.imap (\i w -> w + ssLogLik ss (propagated V.! i) y) logWeights
+            normalized = normalizedLogWeights updatedLogWeights
+            ess = effectiveSampleSize updatedLogWeights
+            values = VU.generate count (\i -> realToFrac (propagated V.! i))
+            mean = VU.sum (VU.zipWith (*) normalized values)
+            second = VU.sum (VU.zipWith (\w x -> w * x * x) normalized values)
+            variance = second - mean * mean
+            filterStep = FilterStep{fsMean = mean, fsVariance = variance, fsEss = ess}
+            -- The population the cloud renders: the scalar states and their normalized
+            -- weights at this step, captured before any resample so they are the
+            -- genuine filtering cloud behind the step's mean.
+            cloudStep = CloudStep{csStep = filterStep, csStates = values, csWeights = normalized}
+        if ess < resampleBelow
+            then do
+                ancestors <- systematicResample updatedLogWeights (VU.enumFromN 0 count) gen
+                let resampledStates = V.backpermute propagated (VU.convert ancestors)
+                    resetLogWeights = VU.replicate count 0
+                foldStep (resampledStates, resetLogWeights, cloudStep : steps) rest
+            else
+                foldStep (propagated, updatedLogWeights, cloudStep : steps) rest
