@@ -26,6 +26,13 @@
   touch-action: none;
 }
 
+/* The canvas is keyboard-operable (arrow keys move the active point), so it
+   carries the same visible focus outline as every other interactive element. */
+.canvas:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 /* The reconnecting pulse: a calm accent breath on the figure border, the single
    accent hue signalling state (no second status color), per design system. */
 .reconnecting {
