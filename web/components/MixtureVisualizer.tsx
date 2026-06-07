@@ -389,7 +389,7 @@ export function MixtureVisualizer({
 
     const request: RunRequest = {
       method,
-      dataset: { tag: "Mixture", points },
+      dataset: { tag: "Mixture", mixturePoints: points },
       samples: REQUESTED_SAMPLES,
     };
 
@@ -424,7 +424,7 @@ export function MixtureVisualizer({
     const cancelledRef = { current: false };
     const request: RunRequest = {
       method,
-      dataset: { tag: "Mixture", points },
+      dataset: { tag: "Mixture", mixturePoints: points },
       samples: REQUESTED_SAMPLES,
     };
     void (async () => {
