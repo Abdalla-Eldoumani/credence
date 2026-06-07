@@ -1,12 +1,11 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { CoinVisualizer } from "@/components/CoinVisualizer";
 import { LivePanel } from "@/components/LivePanel";
+import { coinPriorA, coinPriorB } from "@/lib/config";
+import type { Method } from "@/lib/stream";
 import styles from "./coin.module.css";
-
-// The wire method string the engine expects (03-01): a bare JSON string, not a
-// tagged object. Mirrored here so the controls compile before lib/stream lands.
-type Method = "Importance" | "MH";
 
 // A representative sample of flips for the one-click first-launch affordance:
 // seven heads, four tails, which pulls the posterior visibly off the prior.
@@ -134,7 +133,13 @@ export default function CoinPage() {
       subtitle="Infer a coin's bias from its flips. The Beta posterior animates as the engine streams, and the exact analytic curve lands on the approximation."
       controls={controls}
     >
-      <p className={styles.hint}>The visualizer mounts here.</p>
+      <CoinVisualizer
+        method={method}
+        flips={flips}
+        priorA={coinPriorA}
+        priorB={coinPriorB}
+        runToken={runToken}
+      />
     </LivePanel>
   );
 }
