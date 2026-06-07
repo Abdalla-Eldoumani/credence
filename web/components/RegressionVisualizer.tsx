@@ -7,6 +7,7 @@ import {
   type Method,
   type RunRequest,
   type Subscription,
+  type Summary,
   startRegressionRun,
   subscribeRun,
 } from "@/lib/stream";
@@ -60,6 +61,13 @@ type RegressionVisualizerProps = {
   onPointsChange: (points: [number, number][]) => void;
   // Bumped by the controls to (re)start a run. 0 means no run requested yet.
   runToken: number;
+  // Optional taps on the single stream subscription so siblings (the traceplot and
+  // diagnostics) can mount without opening a second EventSource. onRunStart fires
+  // when a fresh run begins (reset point), onBatchDraws carries each slope
+  // subsample, onSummary carries each running summary.
+  onRunStart?: () => void;
+  onBatchDraws?: (draws: number[]) => void;
+  onSummary?: (summary: Summary) => void;
 };
 
 const toPixelX = (dataX: number): number =>
@@ -78,11 +86,23 @@ export function RegressionVisualizer({
   points,
   onPointsChange,
   runToken,
+  onRunStart,
+  onBatchDraws,
+  onSummary,
 }: RegressionVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<BandRenderer | null>(null);
   const subscriptionRef = useRef<Subscription | null>(null);
   const reducedMotionRef = useRef(false);
+
+  // The stream-tap callbacks captured in refs so the run effect (gated on runToken)
+  // can call the latest without listing them as deps and re-subscribing mid-run.
+  const onRunStartRef = useRef(onRunStart);
+  onRunStartRef.current = onRunStart;
+  const onBatchDrawsRef = useRef(onBatchDraws);
+  onBatchDrawsRef.current = onBatchDraws;
+  const onSummaryRef = useRef(onSummary);
+  onSummaryRef.current = onSummary;
 
   const [state, setState] = useState<VizState>("empty");
   const [meanReadout, setMeanReadout] = useState<number | null>(null);
@@ -228,6 +248,8 @@ export function RegressionVisualizer({
     sawDataRef.current = false;
     setErrorMessage(null);
     setState("streaming");
+    // Reset the sibling readouts (traceplot, diagnostics) for the fresh run.
+    onRunStartRef.current?.();
 
     const request: RunRequest = {
       method,
@@ -253,6 +275,7 @@ export function RegressionVisualizer({
           if (cancelled) return;
           setMeanReadout(summary.mean);
           setBatchReadout(summary.batchIndex);
+          onSummaryRef.current?.(summary);
           setState((prev) => (prev === "reconnecting" ? "streaming" : prev));
         },
         onBatch: (batch) => {
@@ -260,6 +283,7 @@ export function RegressionVisualizer({
           // Each batch is a subsample of slope draws; the band eases onto them.
           sawDataRef.current = true;
           rendererRef.current?.setSlopes(batch.draws);
+          onBatchDrawsRef.current?.(batch.draws);
           setState((prev) => (prev === "reconnecting" ? "streaming" : prev));
         },
         onDone: () => {
@@ -357,6 +381,7 @@ export function RegressionVisualizer({
     sawDataRef.current = false;
     setErrorMessage(null);
     setState("streaming");
+    onRunStartRef.current?.();
     const request: RunRequest = {
       method,
       dataset: { tag: "Regression", points: pointsRef.current },
@@ -375,11 +400,13 @@ export function RegressionVisualizer({
         onSummary: (summary) => {
           setMeanReadout(summary.mean);
           setBatchReadout(summary.batchIndex);
+          onSummaryRef.current?.(summary);
           setState((prev) => (prev === "reconnecting" ? "streaming" : prev));
         },
         onBatch: (batch) => {
           sawDataRef.current = true;
           rendererRef.current?.setSlopes(batch.draws);
+          onBatchDrawsRef.current?.(batch.draws);
           setState((prev) => (prev === "reconnecting" ? "streaming" : prev));
         },
         onDone: () => setState(sawDataRef.current ? "converged" : "empty"),
