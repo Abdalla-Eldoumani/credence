@@ -30,6 +30,13 @@ const demos: Demo[] = [
       "Locate a hidden source from noisy sensor reads. A posterior cloud of plausible positions concentrates on the true source as the reads accumulate.",
     method: "noisy sensors",
   },
+  {
+    href: "/race",
+    title: "Method race",
+    description:
+      "Watch importance sampling and Metropolis-Hastings concentrate on one hidden source from the same data, side by side, each cloud converging at once.",
+    method: "importance vs metropolis",
+  },
 ];
 
 export default function Home() {
