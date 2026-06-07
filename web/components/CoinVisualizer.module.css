@@ -31,14 +31,14 @@
 .axisLabel {
   fill: var(--viz-axis);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-axis);
   font-variant-numeric: tabular-nums;
 }
 
 .axisTitle {
   fill: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-axis);
   letter-spacing: 0.02em;
 }
 
