@@ -26,10 +26,12 @@ import Credence.Wire (
     Dataset (..),
     Method (..),
     RunRequest (..),
+    RunStarted (..),
     StreamEvent (..),
     Summary (..),
  )
 import Data.Aeson (decode, encode)
+import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import Data.Word (Word32)
@@ -996,9 +998,11 @@ every field shape: a 'Summary' with both diagnostics present and one with both
 @effectiveSampleSize@ is absent), so the @Maybe Double@ encoding round-trips in
 both states. 'RunRequest' is checked for both the coin and the regression
 'Dataset', the two bodies the client actually POSTs, so the tagged-sum decoding
-the server relies on is proven here rather than discovered at runtime. These are
-exact-equality checks, not tolerances: serialization is not statistical, so a
-round-trip is either the identity or a bug.
+the server relies on is proven here rather than discovered at runtime. 'RunStarted',
+the run-id response a POST returns, is checked too, since the start-to-subscribe
+handoff depends on that field surviving the trip. These are exact-equality checks,
+not tolerances: serialization is not statistical, so a round-trip is either the
+identity or a bug.
 -}
 wireTests :: TestTree
 wireTests =
@@ -1051,6 +1055,12 @@ wireTests =
                         , runRequestSamples = 3000
                         }
             assertRoundTripReq "RunRequest regression" req
+        , testCase "RunStarted (the POST run-id response) round-trips" $ do
+            -- The body a run POST returns: the RunId the client then streams. A
+            -- field that drifted here would break the start-to-subscribe handoff.
+            -- T.pack since this module has no OverloadedStrings; the field is Text.
+            let started = RunStarted{runStartedRunId = T.pack "7"}
+            assertRoundTripStarted "RunStarted" started
         ]
   where
     -- decode . encode is the identity on a StreamEvent: the value survives the
@@ -1066,3 +1076,9 @@ wireTests =
         assertBool
             (name <> ": decode (encode req) /= Just req; got " <> show (decode (encode req) :: Maybe RunRequest))
             (decode (encode req) == Just req)
+    -- And for the run-id response the POST returns, the handle the client streams.
+    assertRoundTripStarted :: String -> RunStarted -> IO ()
+    assertRoundTripStarted name started =
+        assertBool
+            (name <> ": decode (encode started) /= Just started; got " <> show (decode (encode started) :: Maybe RunStarted))
+            (decode (encode started) == Just started)
