@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { Diagnostics } from "@/components/Diagnostics";
 import { LivePanel } from "@/components/LivePanel";
 import { RegressionVisualizer, SAMPLE_POINTS } from "@/components/RegressionVisualizer";
 import { Traceplot, type TraceplotHandle } from "@/components/Traceplot";
-import type { Method } from "@/lib/stream";
+import type { Method, Summary } from "@/lib/stream";
 import styles from "./regression.module.css";
 
 export default function RegressionPage() {
@@ -18,12 +19,27 @@ export default function RegressionPage() {
   // page opens no second EventSource: the visualizer taps each batch up to here.
   const traceplotRef = useRef<TraceplotHandle | null>(null);
 
+  // The latest summary and run-done flag drive the diagnostics readout, also fed
+  // from the visualizer's single subscription.
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [done, setDone] = useState(false);
+
   const handleRunStart = useCallback(() => {
     traceplotRef.current?.reset();
+    setSummary(null);
+    setDone(false);
   }, []);
 
   const handleBatchDraws = useCallback((draws: number[]) => {
     traceplotRef.current?.push(draws);
+  }, []);
+
+  const handleSummary = useCallback((next: Summary) => {
+    setSummary(next);
+  }, []);
+
+  const handleRunDone = useCallback(() => {
+    setDone(true);
   }, []);
 
   const addPoint = useCallback(() => {
@@ -115,7 +131,10 @@ export default function RegressionPage() {
         runToken={runToken}
         onRunStart={handleRunStart}
         onBatchDraws={handleBatchDraws}
+        onSummary={handleSummary}
+        onRunDone={handleRunDone}
       />
+      <Diagnostics summary={summary} method={method} done={done} />
       <Traceplot ref={traceplotRef} label="slope" />
     </LivePanel>
   );
