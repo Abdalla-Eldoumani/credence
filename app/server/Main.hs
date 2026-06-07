@@ -60,6 +60,7 @@ import Control.Monad.Primitive (RealWorld)
 import Credence.Inference.Importance (importanceSamples, normalizedLogWeights, posteriorMean)
 import Credence.Inference.MH (mhChain)
 import Credence.Model (Model, coinModel)
+import Credence.Model.Localization (localize)
 import Credence.Model.Regression (linearRegression)
 import Credence.Wire (
     Batch (..),
@@ -202,6 +203,7 @@ main = do
         -- response carries the fresh RunId the client then streams.
         post "/run/coin" (startRun registry Coin{datasetFlips = []})
         post "/run/regression" (startRun registry Regression{datasetPoints = []})
+        post "/run/localization" (startRun registry Localization{datasetReadings = []})
         -- GET drains one run's queue as an event stream, keyed by the RunId
         -- captured from the path.
         get "/stream/:runId" (streamRun registry)
@@ -253,6 +255,7 @@ the JSON decode gives against a malformed body.
 matchDataset :: Dataset -> Dataset -> Maybe Dataset
 matchDataset Coin{} d@Coin{} = Just d
 matchDataset Regression{} d@Regression{} = Just d
+matchDataset Localization{} d@Localization{} = Just d
 matchDataset _ _ = Nothing
 
 {- | Allocate and register a fresh run, or refuse if the registry is full.
@@ -342,12 +345,12 @@ runWorkerLoop registry runId req dataset queue latest gen = do
         -- The batch boundaries: 500, 1000, ..., up to total, ending exactly at total.
         steps = batchSizes total
     forM_ (zip [0 ..] steps) $ \(idx, n) -> do
-        (summ, draws) <- computeBatch (runRequestMethod req) dataset n idx gen
+        (summ, draws, weights) <- computeBatch (runRequestMethod req) dataset n idx gen
         -- Record the latest summary for reconnect resume, then enqueue both the
         -- summary and the thinned batch. The writes block if the client is behind.
         atomically (writeTVar latest (Just summ))
         atomically (writeTBQueue queue (EvSummary summ))
-        atomically (writeTBQueue queue (EvBatch (Batch{batchBatchIndex = idx, batchDraws = draws})))
+        atomically (writeTBQueue queue (EvBatch (Batch{batchBatchIndex = idx, batchDraws = draws, batchWeights = weights})))
     atomically (writeTBQueue queue EvDone)
     -- Self-removal: a completed run drops out of the registry so its slot frees up
     -- for the next POST. The drainer may still read the already-enqueued EvDone.
@@ -366,17 +369,22 @@ batchSizes total = go batchStep
         | otherwise = n : go (n + batchStep)
 
 {- | Run one batch of the chosen method at run length @n@ and summarize it into a
-'Summary' (tagged with the batch index) plus a thinned list of raw draws.
+'Summary' (tagged with the batch index), a thinned list of raw draws, and the
+optional per-draw normalized weights aligned with those draws.
 
 For 'Importance': draw @n@ particles, take the weighted posterior mean and the
 weighted second moment (variance @= E[x^2] - mean^2@), and the effective sample
 size @1 / sum(normalizedWeight^2)@ from the log-weight column; acceptance rate is
-'Nothing' (importance has no accept step). For 'MH': run an @n@-step chain, take
-the plain mean and variance over the visited values and the measured acceptance
-rate from 'mhChain'; ESS is 'Nothing' (the chain ESS is an autocorrelation-based
-quantity not computed here). The subsample is an even thinning of the latent
-values for the client histogram. Every statistic comes from the verified library
-functions; this only arranges their output.
+'Nothing' (importance has no accept step). The returned weights are the normalized
+importance weights thinned by the SAME stride and in the SAME order as the draws (so
+@weights !! i@ belongs to @draws !! i@), which is the opacity-by-weight input the
+cloud reads (the edge-case notes: only the bounded subsample, with its weights,
+crosses the wire). For 'MH': run an @n@-step chain, take the plain mean and variance
+over the visited values and the measured acceptance rate from 'mhChain'; ESS is
+'Nothing' (the chain ESS is an autocorrelation-based quantity not computed here), and
+the weights are 'Nothing' (the chain has no per-draw importance weight). The
+subsample is an even thinning of the latent values for the client histogram. Every
+statistic comes from the verified library functions; this only arranges their output.
 -}
 computeBatch ::
     Method ->
@@ -384,7 +392,7 @@ computeBatch ::
     Int ->
     Int ->
     Gen RealWorld ->
-    IO (Summary, [Double])
+    IO (Summary, [Double], Maybe [Double])
 computeBatch method dataset n idx gen =
     case method of
         Importance -> do
@@ -397,6 +405,11 @@ computeBatch method dataset n idx gen =
                 normW = normalizedLogWeights logWs
                 ess = 1 / VU.sum (VU.map (\w -> w * w) normW)
                 draws = thin subsampleSize (V.toList (V.map fst samples))
+                -- Thin the normalized weights by the SAME stride and order as the
+                -- draws so weights !! i belongs to draws !! i. Both lists are length
+                -- n before thinning, and thin is a deterministic function of length,
+                -- so the kept indices coincide and the alignment holds.
+                weights = thin subsampleSize (VU.toList normW)
                 summ =
                     Summary
                         { summaryBatchIndex = idx
@@ -405,7 +418,7 @@ computeBatch method dataset n idx gen =
                         , summaryAcceptanceRate = Nothing
                         , summaryEffectiveSampleSize = Just ess
                         }
-            pure (summ, draws)
+            pure (summ, draws, Just weights)
         MH -> do
             (chain, rate) <- mhChain n (buildModel dataset) gen
             let cn = fromIntegral (V.length chain)
@@ -421,20 +434,23 @@ computeBatch method dataset n idx gen =
                         , summaryAcceptanceRate = Just rate
                         , summaryEffectiveSampleSize = Nothing
                         }
-            pure (summ, draws)
+            pure (summ, draws, Nothing)
 
 {- | Build the 'Credence.Model' the run conditions on from its 'Dataset'.
 
 The coin model uses a Beta(2,2) prior, the same weakly-informative prior the
 conjugate gate runs on; the regression model uses the broad Normal(0,3) prior and
-unit noise the Normal-Normal gate uses. These priors are fixed here rather than
-sent on the wire: the demos are about visualizing convergence for a known model,
-not about tuning priors from the client. The model is structure only; building it
-draws nothing, and the chosen interpreter is what runs it.
+unit noise the Normal-Normal gate uses; the localization model uses the broad
+Normal(0,5) prior and unit sensor noise the recovery test plants the source under.
+These priors are fixed here rather than sent on the wire: the demos are about
+visualizing convergence for a known model, not about tuning priors from the client.
+The model is structure only; building it draws nothing, and the chosen interpreter
+is what runs it.
 -}
 buildModel :: Dataset -> Model Double
 buildModel (Coin flips) = coinModel 2 2 flips
 buildModel (Regression pts) = linearRegression 0 3 1 pts
+buildModel (Localization readings) = localize 0 5 1 readings
 
 {- | Evenly thin a list to at most @k@ elements, preserving order and span.
 
@@ -478,7 +494,7 @@ streamRun registry = do
             -- Unknown run: a single comment frame keeps the connection from hanging
             -- and tells a client to POST first. EventSource ignores comment lines.
             stream $ \send flush -> do
-                send (lazyByteString ": no active run for this id, post to /run/coin or /run/regression first\n\n")
+                send (lazyByteString ": no active run for this id, post to /run/coin, /run/regression, or /run/localization first\n\n")
                 flush
         Just st ->
             stream $ \send flush -> do
