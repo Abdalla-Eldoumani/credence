@@ -63,13 +63,15 @@ export type LocalizationDataset = { tag: "Localization"; readings: number[] };
 // so as the batch index advances the cloud walks along the trajectory.
 export type TrackingDataset = { tag: "Tracking"; observations: number[] };
 
-// The mixture dataset: the synthetic data points to be clustered. The wire shape
-// matches the server (Mixture{points:[...]}, the datasetMixturePoints accessor
-// de-prefixed to points), which runs importance on the collapsed Gaussian mixture;
-// a batch's draws are the recovered (sorted) cluster means concentrating on the
-// planted clusters, carrying no per-draw weight (the per-cluster concentration is
+// The mixture dataset: the synthetic data points to be clustered. The wire field is
+// mixturePoints, not points: the server's Mixture accessor is datasetMixturePoints,
+// which the dataset de-prefix (drop "dataset") turns into mixturePoints (Regression
+// already owns the plain points field with a different element type, so the mixture's
+// points carry a distinct name). The server runs importance on the collapsed Gaussian
+// mixture; a batch's draws are the recovered (sorted) cluster means concentrating on
+// the planted clusters, carrying no per-draw weight (the per-cluster concentration is
 // the story, not opacity).
-export type MixtureDataset = { tag: "Mixture"; points: number[] };
+export type MixtureDataset = { tag: "Mixture"; mixturePoints: number[] };
 
 export type Dataset =
   | CoinDataset
