@@ -1676,6 +1676,29 @@ wireTests =
                         , runRequestSamples = 4000
                         }
             assertRoundTripReq "RunRequest localization" req
+        , testCase "RunRequest for the tracking model round-trips" $ do
+            -- The fourth dataset: the noisy observation sequence of a moving target,
+            -- fed to the particle filter. Proves the Tracking tag the /run/tracking
+            -- route matches decodes here rather than at runtime.
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Tracking{datasetObservations = [1.0, 1.2, 0.9, 1.5]}
+                        , runRequestSamples = 20000
+                        }
+            assertRoundTripReq "RunRequest tracking" req
+        , testCase "RunRequest for the mixture model round-trips" $ do
+            -- The fifth dataset: the synthetic points to be clustered. Proves the
+            -- Mixture tag the /run/mixture route matches decodes here. The field is
+            -- mixturePoints (datasetPoints is taken by Regression with a different
+            -- element type, so the mixture's points carry a distinct field name).
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Mixture{datasetMixturePoints = [-6.1, 0.2, 5.0, -5.9]}
+                        , runRequestSamples = 50000
+                        }
+            assertRoundTripReq "RunRequest mixture" req
         , testCase "RunStarted (the POST run-id response) round-trips" $ do
             -- The body a run POST returns: the RunId the client then streams. A
             -- field that drifted here would break the start-to-subscribe handoff.
