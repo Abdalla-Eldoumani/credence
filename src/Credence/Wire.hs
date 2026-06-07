@@ -109,16 +109,22 @@ instance FromJSON Method where
 {- | The data a run conditions on, one constructor per demo model. @Coin@ carries
 the observed flips (@True@ for heads); @Regression@ carries the observed points as
 @(x, y)@ pairs; @Localization@ carries the noisy sensor readings of a hidden source
-position. Tagged so a single 'RunRequest' type serves the @/run/coin@,
-@/run/regression@, and @/run/localization@ routes:
-@{"tag":"Coin","flips":[true,false]}@, @{"tag":"Regression","points":[[1,2.1]]}@, or
-@{"tag":"Localization","readings":[1.1,0.9]}@. The server validates the constructor
-against the route and builds the corresponding 'Credence.Model'.
+position; @Tracking@ carries the noisy observation sequence of a moving target (one
+scalar read per time step, fed to the particle filter); @Mixture@ carries the
+synthetic data points to be clustered. Tagged so a single 'RunRequest' type serves
+the @/run/coin@, @/run/regression@, @/run/localization@, @/run/tracking@, and
+@/run/mixture@ routes: @{"tag":"Coin","flips":[true,false]}@,
+@{"tag":"Regression","points":[[1,2.1]]}@, @{"tag":"Localization","readings":[1.1,0.9]}@,
+@{"tag":"Tracking","observations":[1.0,1.2,0.9]}@, or
+@{"tag":"Mixture","points":[-6.1,0.2,5.0]}@. The server validates the constructor
+against the route and builds the corresponding model.
 -}
 data Dataset
     = Coin {datasetFlips :: [Bool]}
     | Regression {datasetPoints :: [(Double, Double)]}
     | Localization {datasetReadings :: [Double]}
+    | Tracking {datasetObservations :: [Double]}
+    | Mixture {datasetMixturePoints :: [Double]}
     deriving (Eq, Show, Generic)
 
 instance ToJSON Dataset where
