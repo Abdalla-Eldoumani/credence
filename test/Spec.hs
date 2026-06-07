@@ -18,6 +18,13 @@ import Credence.Inference.Importance (
     posteriorMean,
  )
 import Credence.Inference.MH (mhChain)
+import Credence.Inference.SMC (
+    FilterStep (..),
+    StateSpace (..),
+    effectiveSampleSize,
+    particleFilter,
+    systematicResample,
+ )
 import Credence.Model (Model (..), coinModel, observe, sample)
 import Credence.Model.Localization (localize)
 import Credence.Model.Regression (linearRegression)
@@ -74,6 +81,7 @@ tests =
         , normalNormalTests
         , crossSeedRegressionTests
         , localizationRecoveryTests
+        , smcSanityTests
         , wireTests
         ]
 
@@ -1120,6 +1128,217 @@ localizationRecoveryTests =
             assertBool
                 ("posterior variance at " <> show (length manyReadings) <> " readings " <> show varMany <> " strictly less than at " <> show (length fewReadings) <> " readings " <> show varFew)
                 (varMany < varFew)
+        ]
+
+{- | One step of the analytic scalar Kalman filter, the known answer the particle
+filter is judged against.
+
+For the linear-Gaussian random walk @x_t = x_{t-1} + N(0, q)@ observed as
+@y_t = x_t + N(0, r)@, the filtering distribution stays Normal and its mean and
+variance follow the standard scalar Kalman recursion (Kalman 1960; any state-space
+text). Given the previous posterior @(m, p)@ and a new observation @y@:
+
+    predict:  m' = m,        p' = p + q
+    update:   k  = p' / (p' + r)
+              m_new = m' + k * (y - m')
+              p_new = (1 - k) * p'
+
+The transition is a pure random walk so the predicted mean equals the previous mean;
+the Kalman gain @k@ blends the prediction with the observation by their relative
+precisions. This is hand-derived from the model, not taken from a library, and it is
+the oracle the particle filter's per-step mean and variance must match.
+-}
+kalmanStep :: Double -> Double -> (Double, Double) -> Double -> (Double, Double)
+kalmanStep q r (m, p) y = (mNew, pNew)
+  where
+    -- Predict: the random walk leaves the mean put and inflates the variance by q.
+    pPredict = p + q
+    -- Update: gain by relative precision, then blend the prediction and the reading.
+    gain = pPredict / (pPredict + r)
+    mNew = m + gain * (y - m)
+    pNew = (1 - gain) * pPredict
+
+{- | Run the analytic Kalman filter over an observation sequence from a Normal prior,
+returning the per-step posterior @(mean, variance)@ list (one per observation).
+-}
+kalmanFilter :: Double -> Double -> (Double, Double) -> [Double] -> [(Double, Double)]
+kalmanFilter q r prior = drop 1 . scanl (kalmanStep q r) prior
+
+{- | The linear-Gaussian state-space fixture shared by the Kalman known-answer
+oracle: a scalar random walk with Gaussian observations, plus its parameters.
+
+The state is a 'Double' and the model is expressed entirely through 'normalDist':
+the initial prior is @Normal(km0, sqrt kp0)@, the transition is the random walk
+@x_t ~ Normal(x_{t-1}, sqrt kq)@, and the observation likelihood is
+@y_t ~ Normal(x_t, sqrt kr)@ scored by the Normal log-density. The parameters are
+moderate so the filtering posterior stays well-conditioned and the effective sample
+size stays healthy across the sequence (a sharp likelihood would collapse the cloud
+and force a resample every step, which the ESS oracle covers separately).
+-}
+kq, kr, km0, kp0 :: Double
+kq = 0.5
+kr = 1.0
+km0 = 0.0
+kp0 = 1.0
+
+{- | The literal observation sequence for the Kalman oracle, fixed so the run is
+deterministic. A short walk that drifts up then settles, enough steps to exercise the
+recursion without the cloud needing an unreasonable particle count.
+-}
+kalmanObservations :: [Double]
+kalmanObservations = [0.8, 1.6, 2.1, 1.9, 3.0, 2.7, 3.4]
+
+-- | The state-space model for 'kalmanObservations', as a 'StateSpace Double'.
+kalmanModel :: StateSpace Double
+kalmanModel =
+    StateSpace
+        { ssInit = normalDist km0 (sqrt kp0)
+        , ssTransition = \x -> normalDist x (sqrt kq)
+        , ssLogLik = \x y -> logDensityDist (normalDist x (sqrt kr)) y
+        }
+
+{- | THE particle-filter gate: the three correctness sanity oracles.
+
+A particle filter that quietly biases the distribution is the same failure mode as a
+biased sampler (the correctness discipline), so it gets the same known-answer
+treatment. Three oracles, each under a FIXED ST seed:
+
+1. Effective sample size behaves as expected: it drops as weights concentrate and
+   resets toward N after a resample.
+2. Resampling is unbiased: it does not shift the empirical mean.
+3. Known-answer recovery: on a linear-Gaussian model the per-step filtering mean and
+   variance match the analytic Kalman filter, the strongest oracle the CONTEXT and
+   the discipline call for.
+-}
+smcSanityTests :: TestTree
+smcSanityTests =
+    testGroup
+        "particle-filter sanity (ESS, unbiased resampling, Kalman known-answer)"
+        [ testCase "ESS drops on concentrated weights and resets toward N after a resample" $ do
+            let
+                count = 1000 :: Int
+                n = fromIntegral count :: Double
+                -- Equal log-weights: every particle contributes, so ESS is exactly N.
+                equalLogWeights = VU.replicate count 0
+                essEqual = effectiveSampleSize equalLogWeights
+                -- A concentrated weight vector: one particle far above the rest (a
+                -- log-weight of 0 against -20 puts ~exp(20) times the mass on it), so
+                -- almost all the mass is on one particle and ESS sits near 1.
+                concentratedLogWeights =
+                    VU.generate count (\i -> if i == 0 then 0 else -20)
+                essConcentrated = effectiveSampleSize concentratedLogWeights
+                -- Resample the concentrated population under a FIXED seed, then score
+                -- the offspring with uniform weights (which is how the filter resets
+                -- them). The reset population's ESS is exactly N because uniform
+                -- weights have ESS N; this is the "resets toward N" the discipline names.
+                essAfterResample = runST $ do
+                    g <- initialize fixedSeed
+                    _ <- systematicResample concentratedLogWeights (VU.enumFromN 0 count) g
+                    pure (effectiveSampleSize (VU.replicate count 0))
+            -- ESS is exact arithmetic on the weights, not a statistical estimate, so
+            -- the tolerances are tight round-off windows, not standard-error windows.
+            -- Equal weights give ESS = N exactly.
+            assertBool
+                ("equal-weight ESS " <> show essEqual <> " is N = " <> show n)
+                (abs (essEqual - n) < 1e-6)
+            -- Concentrated weights collapse ESS to near 1: with one mass at exp(0) and
+            -- 999 at exp(-20), ESS = 1 / sum p_i^2 is within a hair of 1, far below N.
+            assertBool
+                ("concentrated ESS " <> show essConcentrated <> " is near 1 and far below N = " <> show n)
+                (essConcentrated < 1.001 && essConcentrated < n / 100)
+            -- After the resample the weights are reset to uniform, so ESS is back to N:
+            -- the resample has refocused the population away from the degenerate state.
+            assertBool
+                ("post-resample ESS " <> show essAfterResample <> " resets to N = " <> show n)
+                (abs (essAfterResample - n) < 1e-6)
+        , testCase "systematic resampling does not shift the empirical mean (unbiased, fixed seed)" $ do
+            let
+                -- A weighted particle cloud laid out as a contiguous grid of values
+                -- across [-4, 4] carrying a smooth bell-shaped weight profile centered
+                -- at 0.7. This mirrors a real filtering posterior (values spread over a
+                -- range, weight peaked in the middle and tapering at the tails) rather
+                -- than a repeated short cycle. The ordering matters: systematic
+                -- resampling's single regularly spaced comb is sensitive to particle
+                -- ORDER, and a periodically tiled weight pattern resonates with the comb
+                -- and biases the resampled mean (Doucet and Johansen 2009 note the
+                -- order-dependence; Hol, Schon, and Gustafsson 2006 demonstrate it). A
+                -- monotone grid with a smoothly varying weight has no such period, so the
+                -- comb samples it faithfully, which is the realistic case the filter
+                -- actually resamples.
+                count = 20000 :: Int
+                -- Values evenly spaced on [-4, 4].
+                gridValue i = -4 + 8 * fromIntegral i / fromIntegral (count - 1)
+                values = VU.generate count gridValue :: VU.Vector Double
+                -- A Gaussian-shaped (unnormalized) weight profile peaked at 0.7, width
+                -- 1.3, supplied as a log-weight directly: log w_i = -((v_i - mu)^2)/(2 s^2).
+                -- normalizedLogWeights handles the normalization across the population.
+                profileMu = 0.7 :: Double
+                profileS = 1.3 :: Double
+                logWeights =
+                    VU.map (\v -> negate ((v - profileMu) * (v - profileMu)) / (2 * profileS * profileS)) values
+                -- The weighted mean BEFORE resampling, the target. Computed directly
+                -- from the normalized weights and values.
+                normalized = normalizedLogWeights logWeights
+                weightedMeanBefore = VU.sum (VU.zipWith (*) normalized values)
+                -- Resample under a FIXED seed, then take the PLAIN mean of the resampled
+                -- (now equally weighted) particle values: this is the empirical mean
+                -- after resampling, which must match the weighted mean before.
+                plainMeanAfter = runST $ do
+                    g <- initialize fixedSeed
+                    ancestors <- systematicResample logWeights (VU.enumFromN 0 count) g
+                    let resampled = VU.backpermute values ancestors
+                    pure (VU.sum resampled / fromIntegral (VU.length resampled))
+                -- Tolerance. Resampling is unbiased, so the resampled mean estimates the
+                -- weighted mean with a standard error bounded by the cloud's weighted
+                -- spread over sqrt(count). The weighted sd here is ~1.2, so at
+                -- count = 20000 the SE is ~ 1.2/sqrt(20000) ~ 0.0085; systematic
+                -- resampling has variance no larger than multinomial, so the 0.05 window
+                -- is ~6 SE, generous enough that a correct (unbiased) resample clears it
+                -- essentially always while a biased resample (one that, say, favored the
+                -- high-weight center or dropped the tails) would shift the mean past it.
+                tol = 0.05
+            assertBool
+                ("plain mean after resample " <> show plainMeanAfter <> " near weighted mean before " <> show weightedMeanBefore <> " (tol " <> show tol <> ")")
+                (abs (plainMeanAfter - weightedMeanBefore) < tol)
+        , testCase "filtering mean and variance match the analytic Kalman filter per step (fixed seed)" $ do
+            let
+                -- Many particles so the per-step filtering moments are low-variance
+                -- estimates of the Kalman posterior; the threshold 0.5 resamples when
+                -- fewer than half the particles effectively contribute.
+                count = 200000 :: Int
+                threshold = 0.5 :: Double
+                -- The analytic oracle: the scalar Kalman filter over the same
+                -- observations from the same Normal prior.
+                kalman = kalmanFilter kq kr (km0, kp0) kalmanObservations
+                -- The particle filter under a FIXED ST seed.
+                steps = runST $ do
+                    g <- initialize fixedSeed
+                    V.toList <$> particleFilter count threshold kalmanModel kalmanObservations g
+                -- Pair each step's particle estimate with the Kalman answer.
+                paired = zip steps kalman
+                -- Tolerances. The posterior sd over the sequence is on the order of
+                -- sqrt(kr) ~ 1 (the steady-state filtering variance for q=0.5, r=1 is
+                -- ~0.5, sd ~0.7). With a healthy ESS that stays a large fraction of
+                -- count, the filtering-mean SE ~ posterior_sd / sqrt(ESS); even at a
+                -- conservative ESS ~ count/4 = 50000 that is ~0.7/224 ~ 0.003, so a 0.05
+                -- mean window is ~15 SE. The variance is a second-moment estimator and
+                -- noisier, and the resampling step adds a little extra spread, so it
+                -- gets the looser 0.05 window against a posterior variance of ~0.5; that
+                -- is still a tight relative window a correct filter clears essentially
+                -- always, while a filter that dropped the observation weight or skipped
+                -- the resample would diverge from the Kalman track by far more.
+                meanTol = 0.05
+                varTol = 0.05
+            mapM_
+                ( \(fs, (km, kp)) -> do
+                    assertBool
+                        ("filtering mean " <> show (fsMean fs) <> " near Kalman mean " <> show km <> " (tol " <> show meanTol <> ")")
+                        (abs (fsMean fs - km) < meanTol)
+                    assertBool
+                        ("filtering variance " <> show (fsVariance fs) <> " near Kalman variance " <> show kp <> " (tol " <> show varTol <> ")")
+                        (abs (fsVariance fs - kp) < varTol)
+                )
+                paired
         ]
 
 {- | The wire format round-trips through aeson, so the engine and the browser
