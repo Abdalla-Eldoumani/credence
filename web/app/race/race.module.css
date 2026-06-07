@@ -1,0 +1,111 @@
+/* The shared race controls, in the same editorial style as the localization and
+   regression control rails: tokens only, visible focus rings, 44px hit targets. The
+   race has no per-method toggle because it runs both methods at once; the start
+   button bumps the single race token that drives both columns. */
+
+.section {
+  margin-bottom: var(--space-6);
+}
+
+.section:last-child {
+  margin-bottom: 0;
+}
+
+.label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+}
+
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.setupRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.setupLabel {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+.setupValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-num);
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.dataActions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.textButton {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  letter-spacing: 0.02em;
+  padding: var(--space-2);
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.textButton:hover {
+  color: var(--accent);
+}
+
+.textButton:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.start {
+  appearance: none;
+  width: 100%;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  color: var(--bg);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  font-weight: 600;
+  padding: var(--space-4);
+  min-height: 44px;
+  cursor: pointer;
+  transition: background-color var(--dur-short) var(--ease-entrance);
+}
+
+.start:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+.start:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.hint {
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: 1.4;
+  margin-top: var(--space-3);
+}
