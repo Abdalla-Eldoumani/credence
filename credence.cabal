@@ -69,9 +69,17 @@ executable credence-server
       , credence
       , scotty         ==0.20.1
       , text
-    -- stage 3 adds, pinned: aeson ==2.1.2.1, wai ==3.2.4,
-    -- wai-extra ==3.1.15, warp ==3.3.31, http-types ==0.12.4,
-    -- async ==2.2.5, stm, bytestring
+      , aeson          ==2.1.2.1
+      , wai            ==3.2.4
+      , wai-extra      ==3.1.15
+      , warp           ==3.3.31
+      , http-types     ==0.12.4
+      , async          ==2.2.5
+      , stm
+      , bytestring
+      , vector         ==0.13.1.0
+      , primitive      ==0.8.0.0
+      , mwc-random     ==0.15.2.0
 
 test-suite credence-test
     import:           warnings
