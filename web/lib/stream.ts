@@ -1,8 +1,13 @@
-// The EventSource client for the engine stream. The TS types mirror the 03-01
-// Credence.Wire schema exactly (confirmed against 03-01-SUMMARY.md): the stream
-// carries tagged StreamEvent objects, and the POST body is a RunRequest. The
-// server (03-01) replays the latest Summary on connect, so a reconnecting client
-// recovers state immediately.
+// The EventSource client for the engine stream. The TS types mirror the
+// Credence.Wire schema exactly: the stream carries tagged StreamEvent objects, and
+// the POST body is a RunRequest. The server replays the latest Summary on connect,
+// so a reconnecting client recovers state immediately.
+//
+// Run-id protocol: each POST to /run/* mints a fresh RunId and returns it as
+// {"runId":"..."}; start* resolve to that RunId, and subscribeRun(baseUrl, runId)
+// drains that one run by opening /stream/<runId>. Concurrent runs are independent,
+// so two runs (importance and MH on the same data) stream side by side without
+// cancelling each other.
 
 // The inference method. A BARE JSON string on the wire (aeson renders the nullary
 // sum constructor as a string), never a tagged object. Do not wrap in {tag:...}.
@@ -77,13 +82,18 @@ function parseEvent(data: string): StreamEvent | null {
 }
 
 /**
- * Open the engine stream and dispatch parsed events to the handlers. Returns a
- * subscription with close(). EventSource reconnects on its own; an open after an
- * error surfaces via onReconnecting, and the server resends the latest Summary so
- * the animation resumes without a gap.
+ * Open one run's stream and dispatch parsed events to the handlers. Drains the run
+ * named by runId at /stream/<runId>, so two runs subscribed at once stay
+ * independent. Returns a subscription with close(). EventSource reconnects on its
+ * own; an open after an error surfaces via onReconnecting, and the server resends
+ * the latest Summary so the animation resumes without a gap.
  */
-export function subscribeRun(baseUrl: string, handlers: StreamHandlers): Subscription {
-  const source = new EventSource(`${baseUrl}/stream`);
+export function subscribeRun(
+  baseUrl: string,
+  runId: string,
+  handlers: StreamHandlers,
+): Subscription {
+  const source = new EventSource(`${baseUrl}/stream/${encodeURIComponent(runId)}`);
   let closed = false;
 
   source.onmessage = (event: MessageEvent<string>) => {
@@ -127,10 +137,11 @@ export function subscribeRun(baseUrl: string, handlers: StreamHandlers): Subscri
   };
 }
 
-// POST a RunRequest to one of the engine's /run/* routes. The route fixes which
-// dataset the server expects (coin vs regression), so the caller picks the path.
-// A non-2xx rejects with the engine's reason so the caller can show an error.
-async function postRun(baseUrl: string, path: string, request: RunRequest): Promise<void> {
+// POST a RunRequest to one of the engine's /run/* routes and return the RunId the
+// engine minted for it. The route fixes which dataset the server expects (coin vs
+// regression), so the caller picks the path. A non-2xx rejects with the engine's
+// reason so the caller can show an error; the 2xx body is {"runId":"..."}.
+async function postRun(baseUrl: string, path: string, request: RunRequest): Promise<string> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -140,23 +151,28 @@ async function postRun(baseUrl: string, path: string, request: RunRequest): Prom
     const reason = await response.text().catch(() => "");
     throw new Error(`engine rejected the run (${response.status}): ${reason}`.trim());
   }
+  const started = (await response.json()) as { runId?: string };
+  if (!started || typeof started.runId !== "string") {
+    throw new Error("engine did not return a run id");
+  }
+  return started.runId;
 }
 
 /**
- * Start a coin run on the engine. POSTs the RunRequest to /run/coin (this cancels
- * any prior run and spawns the worker). Resolves when the engine returns; rejects
- * on a non-2xx so the caller can show the error state.
+ * Start a coin run on the engine. POSTs the RunRequest to /run/coin and resolves to
+ * the RunId to subscribe; rejects on a non-2xx so the caller can show the error
+ * state. The run streams independently of any other, keyed by this RunId.
  */
-export async function startRun(baseUrl: string, request: RunRequest): Promise<void> {
+export async function startRun(baseUrl: string, request: RunRequest): Promise<string> {
   return postRun(baseUrl, "/run/coin", request);
 }
 
 /**
  * Start a regression run on the engine. POSTs the RunRequest to /run/regression
- * (which the server matches to its Regression dataset). The stream half is shared
- * with the coin demo: subscribeRun is identical, since /stream serves whichever
- * run is active.
+ * (which the server matches to its Regression dataset) and resolves to the RunId.
+ * The stream half is shared with the coin demo: subscribeRun(baseUrl, runId, ...)
+ * drains the run named by that RunId.
  */
-export async function startRegressionRun(baseUrl: string, request: RunRequest): Promise<void> {
+export async function startRegressionRun(baseUrl: string, request: RunRequest): Promise<string> {
   return postRun(baseUrl, "/run/regression", request);
 }
