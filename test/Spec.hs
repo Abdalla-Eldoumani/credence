@@ -1135,14 +1135,16 @@ loudly if a 'ToJSON'/'FromJSON' pair drifts apart.
 Both 'StreamEvent' arms are covered ('EvBatch' and 'EvSummary'), and within them
 every field shape: a 'Summary' with both diagnostics present and one with both
 'Nothing' (the importance-vs-MH split, where @acceptanceRate@ or
-@effectiveSampleSize@ is absent), so the @Maybe Double@ encoding round-trips in
-both states. 'RunRequest' is checked for both the coin and the regression
-'Dataset', the two bodies the client actually POSTs, so the tagged-sum decoding
-the server relies on is proven here rather than discovered at runtime. 'RunStarted',
-the run-id response a POST returns, is checked too, since the start-to-subscribe
-handoff depends on that field surviving the trip. These are exact-equality checks,
-not tolerances: serialization is not statistical, so a round-trip is either the
-identity or a bug.
+@effectiveSampleSize@ is absent), and a 'Batch' with @batchWeights@ 'Nothing' (the
+coin/MH shape, encoded @null@) and one with @batchWeights@ 'Just' an aligned array
+(the importance shape the cloud reads), so the @Maybe [Double]@ encoding round-trips
+in both states. 'RunRequest' is checked for the coin, the regression, and the
+localization 'Dataset', the three bodies the client actually POSTs, so the
+tagged-sum decoding the server relies on is proven here rather than discovered at
+runtime. 'RunStarted', the run-id response a POST returns, is checked too, since the
+start-to-subscribe handoff depends on that field surviving the trip. These are
+exact-equality checks, not tolerances: serialization is not statistical, so a
+round-trip is either the identity or a bug.
 -}
 wireTests :: TestTree
 wireTests =
@@ -1174,9 +1176,23 @@ wireTests =
                             , summaryEffectiveSampleSize = Nothing
                             }
             assertRoundTrip "EvSummary (Nothing/Nothing)" ev
-        , testCase "EvBatch with a subsample of draws round-trips" $ do
-            let ev = EvBatch Batch{batchBatchIndex = 7, batchDraws = [0.61, 0.66, 0.63, 0.59]}
-            assertRoundTrip "EvBatch" ev
+        , testCase "EvBatch with draws but no weights round-trips (the MH/coin shape)" $ do
+            -- A coin or MH batch carries no per-draw weights, so batchWeights is
+            -- Nothing, which encodes as null and must round-trip back to Nothing.
+            let ev = EvBatch Batch{batchBatchIndex = 7, batchDraws = [0.61, 0.66, 0.63, 0.59], batchWeights = Nothing}
+            assertRoundTrip "EvBatch (Nothing weights)" ev
+        , testCase "EvBatch with draws and aligned weights round-trips (the importance shape)" $ do
+            -- An importance batch carries normalized per-draw weights aligned with
+            -- the draws (same length, same order), the opacity input the cloud reads.
+            -- Just xs encodes as the array and must survive the trip as Just xs.
+            let ev =
+                    EvBatch
+                        Batch
+                            { batchBatchIndex = 4
+                            , batchDraws = [2.9, 3.1, 3.0, 2.95]
+                            , batchWeights = Just [0.2, 0.35, 0.3, 0.15]
+                            }
+            assertRoundTrip "EvBatch (Just weights)" ev
         , testCase "EvDone round-trips" $
             assertRoundTrip "EvDone" EvDone
         , testCase "RunRequest for the coin model round-trips" $ do
@@ -1195,6 +1211,17 @@ wireTests =
                         , runRequestSamples = 3000
                         }
             assertRoundTripReq "RunRequest regression" req
+        , testCase "RunRequest for the localization model round-trips" $ do
+            -- The third dataset the client POSTs: noisy sensor readings of a hidden
+            -- source. Proves the Localization tag the /run/localization route matches
+            -- decodes here rather than being discovered at runtime.
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Localization{datasetReadings = [1.1, 0.9, 1.2, 0.8]}
+                        , runRequestSamples = 4000
+                        }
+            assertRoundTripReq "RunRequest localization" req
         , testCase "RunStarted (the POST run-id response) round-trips" $ do
             -- The body a run POST returns: the RunId the client then streams. A
             -- field that drifted here would break the start-to-subscribe handoff.
