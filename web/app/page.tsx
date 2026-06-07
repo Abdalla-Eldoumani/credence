@@ -23,6 +23,13 @@ const demos: Demo[] = [
       "Fit a line to noisy points you can drag. A band of plausible lines collapses onto the trend as the posterior converges.",
     method: "normal-normal",
   },
+  {
+    href: "/localization",
+    title: "Localization",
+    description:
+      "Locate a hidden source from noisy sensor reads. A posterior cloud of plausible positions concentrates on the true source as the reads accumulate.",
+    method: "noisy sensors",
+  },
 ];
 
 export default function Home() {
