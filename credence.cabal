@@ -41,6 +41,7 @@ library
     build-depends:
         base          >=4.18 && <4.19
       , containers     ==0.6.7
+      , text
       , vector         ==0.13.1.0
       , mwc-random     ==0.15.2.0
       , math-functions ==0.3.4.4
@@ -69,6 +70,7 @@ executable credence-server
       , credence
       , scotty         ==0.20.1
       , text
+      , containers     ==0.6.7
       , aeson          ==2.1.2.1
       , wai            ==3.2.4
       , wai-extra      ==3.1.15
@@ -95,6 +97,7 @@ test-suite credence-test
       , tasty-quickcheck ==0.10.2
       , QuickCheck       ==2.14.3
       , statistics       ==0.16.3.0
+      , text
       , vector           ==0.13.1.0
       , mwc-random       ==0.15.2.0
       , aeson            ==2.1.2.1
