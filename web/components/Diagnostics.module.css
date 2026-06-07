@@ -18,19 +18,28 @@
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--text-muted);
+  padding-bottom: var(--space-3);
   margin-bottom: var(--space-4);
+  /* A hairline separator sets the heading off from the readouts, the only rule in
+     the panel (design system: 1px --border-subtle plus spacing, no shadows). */
+  border-bottom: 1px solid var(--border-subtle);
 }
 
+/* The two readouts size to the panel rather than a fixed track, so the grid sits in
+   a narrow race column as comfortably as the full live panel. minmax(0, 1fr) lets a
+   column shrink below its content's intrinsic width instead of forcing overflow, and
+   the grid drops to one column when a track would fall under a legible width. */
 .grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-8);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: var(--space-6);
 }
 
 .stat {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  min-width: 0;
 }
 
 .statLabel {
@@ -48,6 +57,9 @@
   color: var(--text);
   /* Tabular figures so the readout does not jitter as it updates live. */
   font-variant-numeric: tabular-nums;
+  /* A live ESS can run to several digits; keep it on one line and let the column,
+     not the figure, set the width so it never pushes the grid wider than the panel. */
+  white-space: nowrap;
 }
 
 .statNote {
@@ -57,10 +69,13 @@
 }
 
 /* The not-converged note uses the single accent hue and weight, no second status
-   color (design system). */
+   color (design system). A hairline above ties it into the panel rhythm. */
 .warning {
+  padding-top: var(--space-4);
   margin-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
   font-size: var(--text-small);
   font-weight: 500;
+  line-height: 1.4;
   color: var(--accent);
 }
