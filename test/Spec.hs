@@ -19,6 +19,7 @@ import Credence.Inference.Importance (
  )
 import Credence.Inference.MH (mhChain)
 import Credence.Model (Model (..), coinModel, observe, sample)
+import Credence.Model.Localization (localize)
 import Credence.Model.Regression (linearRegression)
 import Credence.Trace (traceAddresses, traceModel)
 import Credence.Wire (
@@ -72,6 +73,7 @@ tests =
         , mhConjugateTests
         , normalNormalTests
         , crossSeedRegressionTests
+        , localizationRecoveryTests
         , wireTests
         ]
 
@@ -980,6 +982,144 @@ crossSeedRegressionTests =
                         (abs (m - analyticMean) < meanTol)
                 )
                 means
+        ]
+
+{- | The localization fixture: a planted source and two literal reading sets near
+it, the data the recovery oracle runs on.
+
+A hidden source sits at 'plantedTheta'. The sensors return noisy position reads of
+it under 'locSigma' noise, drawn from a broad 'locMu0'/'locSigma0' prior. The
+readings are LITERAL (not generated) so every run is deterministic under the fixed
+seed, and they are centered tightly on the planted value so the planted answer is a
+sharp oracle: 'fewReadings' is a small set and 'manyReadings' a larger one with the
+same mean, so the posterior over the same source can be compared at two data
+volumes. Each set's arithmetic mean is 'plantedTheta' exactly (the deviations are
+symmetric and cancel), which keeps the recovery target the planted value itself
+rather than a finite-sample offset of it.
+-}
+plantedTheta, locMu0, locSigma0, locSigma :: Double
+plantedTheta = 3.0
+locMu0 = 0.0
+locSigma0 = 5.0
+locSigma = 1.0
+
+{- | A small reading set centered on 'plantedTheta'. Six symmetric deviations about
+3.0 that sum to zero, so the sample mean is exactly 3.0.
+-}
+fewReadings :: [Double]
+fewReadings = [3.6, 2.4, 3.2, 2.8, 3.5, 2.5]
+
+{- | A larger reading set centered on 'plantedTheta', the same mean as 'fewReadings'
+(exactly 3.0, twenty-four symmetric deviations summing to zero) but four times as
+many observations, so the posterior over the same source concentrates further.
+-}
+manyReadings :: [Double]
+manyReadings =
+    [ 3.6
+    , 2.4
+    , 3.2
+    , 2.8
+    , 3.5
+    , 2.5
+    , 3.7
+    , 2.3
+    , 3.1
+    , 2.9
+    , 3.4
+    , 2.6
+    , 3.8
+    , 2.2
+    , 3.3
+    , 2.7
+    , 3.9
+    , 2.1
+    , 3.05
+    , 2.95
+    , 3.45
+    , 2.55
+    , 3.15
+    , 2.85
+    ]
+
+{- | THE localization gate: planted-source recovery under a fixed seed.
+
+The correctness oracle for the localization model, per the correctness
+discipline: no closed form is assumed, the planted source is the oracle. A known
+'plantedTheta' is conditioned on with noisy sensor reads, and the importance
+posterior must (a) recover the planted position in its MEAN within a documented
+tolerance, and (b) CONCENTRATE, its posterior variance strictly smaller at a large
+reading count than at a small one. Both are asserted, not just the mean: a mean that
+lands while the spread does not shrink would mean the model conditions but does not
+sharpen, the opposite of what the cloud is meant to show.
+
+This is also the third model running under the importance interpreter unchanged,
+the operational-monad payoff: 'localize' is built only from 'sample' and 'observe'
+and needs no change to the sampler.
+
+Recovery (mean). The readings' arithmetic mean is exactly 'plantedTheta', so the
+broad-prior posterior mean sits at the planted value up to the sampler's error. The
+proposal is the prior Normal(0,5); the likelihood (six Normal factors at sigma = 1)
+is sharper than the prior, so the effective sample size is a fraction of n. At
+n = 2e5 and ESS on the order of a few percent of n the self-normalized mean SE is
+roughly sigma_post / sqrt(ESS); the posterior sd here is about
+1/sqrt(6/1) ~ 0.41, so with ESS ~ 5000 the SE is ~ 0.006. The 0.05 window is ~8 SE,
+generous enough that a correct sampler clears it essentially always while a wrong
+likelihood (which would not pull the broad prior onto the readings) misses by far
+more. Mirrors the standard-error discipline of 'normalNormalTests'.
+
+Concentration (variance). The same planted source is conditioned on 'fewReadings'
+(six) and 'manyReadings' (twenty-four, same mean), and the posterior variance is
+estimated from the weighted second moment minus the squared mean under the fixed
+seed. With a Normal prior and Normal reads the posterior variance falls like
+1/(1/sigma0^2 + n/sigma^2), so four times the readings cuts it to roughly a quarter
+(0.41^2 ~ 0.166 at six versus ~ 0.042 at twenty-four). The assertion is the strict
+inequality varMany < varFew, the qualitative concentration the cloud renders; the
+gap is large (about 4x) relative to the second-moment estimator's noise, so the
+inequality holds essentially always under the fixed seed.
+-}
+localizationRecoveryTests :: TestTree
+localizationRecoveryTests =
+    testGroup
+        "localization planted-source recovery (the localization gate)"
+        [ testCase "importance posterior recovers the planted source in mean (fixed seed)" $ do
+            let
+                -- Importance sampling on the localization model under a FIXED ST seed.
+                n = 200000
+                samples = runST $ do
+                    g <- initialize fixedSeed
+                    importanceSamples n (localize locMu0 locSigma0 locSigma fewReadings) g
+                estMean = posteriorMean samples id
+                -- The readings' mean is exactly plantedTheta, so recovery targets the
+                -- planted value. SE ~ posterior sd / sqrt(ESS) ~ 0.41/sqrt(5000) ~ 0.006;
+                -- 0.05 is ~8 SE, clearing a correct sampler essentially always while a
+                -- wrong likelihood leaves the mean near the prior mean 0 and misses by
+                -- far more than 0.05.
+                meanTol = 0.05
+            assertBool
+                ("localization posterior mean " <> show estMean <> " near planted " <> show plantedTheta <> " (tol " <> show meanTol <> ")")
+                (abs (estMean - plantedTheta) < meanTol)
+        , testCase "posterior spread shrinks as readings accumulate (concentration)" $ do
+            let
+                n = 200000
+                -- Posterior variance at each reading count, via E[theta^2] - E[theta]^2
+                -- on the normalized weights, each under the SAME fixed seed so the only
+                -- difference is the number of observations.
+                varianceAt readings = runST $ do
+                    g <- initialize fixedSeed
+                    samples <- importanceSamples n (localize locMu0 locSigma0 locSigma readings) g
+                    let m = posteriorMean samples id
+                        second = posteriorMean samples (\x -> x * x)
+                    pure (second - m * m)
+                varFew = varianceAt fewReadings
+                varMany = varianceAt manyReadings
+            -- Concentration: four times the readings cuts the conjugate posterior
+            -- variance to roughly a quarter (~0.166 at six readings vs ~0.042 at
+            -- twenty-four), so the strict inequality holds with a wide margin under
+            -- the fixed seed. Asserting the inequality, not a tolerance, is the point:
+            -- the posterior must sharpen with data, which is what the cloud shows.
+            assertBool
+                ("posterior variance at " <> show (length manyReadings) <> " readings " <> show varMany <> " strictly less than at " <> show (length fewReadings) <> " readings " <> show varFew)
+                (varMany < varFew)
         ]
 
 {- | The wire format round-trips through aeson, so the engine and the browser
