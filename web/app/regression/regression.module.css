@@ -120,7 +120,7 @@
 }
 
 .hint {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--text-caption);
   line-height: 1.4;
   margin-top: var(--space-3);
