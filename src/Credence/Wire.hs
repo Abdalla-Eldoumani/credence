@@ -35,6 +35,7 @@ module Credence.Wire (
     Method (..),
     Dataset (..),
     RunRequest (..),
+    RunStarted (..),
     Summary (..),
     Batch (..),
     StreamEvent (..),
@@ -53,6 +54,7 @@ import Data.Aeson.Types (
     camelTo2,
  )
 import Data.Char (toLower)
+import Data.Text (Text)
 import GHC.Generics (Generic)
 
 {- | Drop a record-field prefix and lower the next initial, so @summaryBatchIndex@
@@ -106,14 +108,17 @@ instance FromJSON Method where
 
 {- | The data a run conditions on, one constructor per demo model. @Coin@ carries
 the observed flips (@True@ for heads); @Regression@ carries the observed points as
-@(x, y)@ pairs. Tagged so a single 'RunRequest' type serves both the @/run/coin@
-and @/run/regression@ routes: @{"tag":"Coin","flips":[true,false]}@ or
-@{"tag":"Regression","points":[[1,2.1],[2,3.9]]}@. The server validates the
-constructor against the route and builds the corresponding 'Credence.Model'.
+@(x, y)@ pairs; @Localization@ carries the noisy sensor readings of a hidden source
+position. Tagged so a single 'RunRequest' type serves the @/run/coin@,
+@/run/regression@, and @/run/localization@ routes:
+@{"tag":"Coin","flips":[true,false]}@, @{"tag":"Regression","points":[[1,2.1]]}@, or
+@{"tag":"Localization","readings":[1.1,0.9]}@. The server validates the constructor
+against the route and builds the corresponding 'Credence.Model'.
 -}
 data Dataset
     = Coin {datasetFlips :: [Bool]}
     | Regression {datasetPoints :: [(Double, Double)]}
+    | Localization {datasetReadings :: [Double]}
     deriving (Eq, Show, Generic)
 
 instance ToJSON Dataset where
@@ -154,6 +159,24 @@ instance ToJSON RunRequest where
 instance FromJSON RunRequest where
     parseJSON = genericParseJSON (recordOptions "runRequest")
 
+{- | The response a run POST returns: the 'RunId' the server allocated for the run
+that just started. The client streams this run by opening @\/stream\/\<runId\>@.
+Encodes as @{"runId":"3"}@. The RunId is an opaque text identifier (the server
+renders it from a monotonic counter); the client treats it as a stable handle and
+does not parse it. This is the handle that makes concurrent runs addressable: each
+POST returns a distinct RunId, so two runs in flight stream independently.
+-}
+newtype RunStarted = RunStarted
+    { runStartedRunId :: Text
+    }
+    deriving (Eq, Show, Generic)
+
+instance ToJSON RunStarted where
+    toJSON = genericToJSON (recordOptions "runStarted")
+
+instance FromJSON RunStarted where
+    parseJSON = genericParseJSON (recordOptions "runStarted")
+
 {- | A running summary of the posterior as it converges: the batch index it was
 computed at, the posterior mean and variance, and two method-specific diagnostics
 that are 'Nothing' when the method does not produce them. @acceptanceRate@ is the
@@ -178,16 +201,28 @@ instance ToJSON Summary where
 instance FromJSON Summary where
     parseJSON = genericParseJSON (recordOptions "summary")
 
-{- | A thinned batch of raw draws for the client's histogram: the batch index and
-a /subsample/ of the latent values, never the full sample. Keeping this a
-subsample is the wire-level half of the streaming-volume rule
-(the edge-case notes): the engine may draw hundreds of thousands of values, but
-only a bounded handful per batch reach the browser. Encodes as
-@{"batchIndex":3,"draws":[0.61,0.66,0.63]}@.
+{- | A thinned batch of raw draws for the client's histogram: the batch index, a
+/subsample/ of the latent values, and optional per-draw normalized weights aligned
+with that subsample. Keeping the draws a subsample is the wire-level half of the
+streaming-volume rule (the edge-case notes): the engine may draw hundreds of
+thousands of values, but only a bounded handful per batch reach the browser.
+
+@batchWeights@ is @Just ws@ for importance sampling, where @ws !! i@ is the
+NORMALIZED self-normalized weight of @draws !! i@ (the two lists are the same length
+and the same order, both thinned by the same stride), so the cloud can scale each
+particle's opacity by its weight. It is @Nothing@ for Metropolis-Hastings, whose
+chain has no per-draw importance weight. This stays inside the no-raw-log-weight
+rule: these are finished, normalized summary weights, never the raw 'observe'
+log-weights, which never leave the engine. The field is additive, so a coin or
+regression batch (which sets it 'Nothing') still round-trips. Under aeson defaults
+@Nothing@ encodes as @null@ and @Just xs@ as the array, so an importance batch reads
+@{"batchIndex":3,"draws":[0.61,0.66],"weights":[0.5,0.5]}@ and an MH batch reads
+@{"batchIndex":3,"draws":[0.61,0.66],"weights":null}@.
 -}
 data Batch = Batch
     { batchBatchIndex :: Int
     , batchDraws :: [Double]
+    , batchWeights :: Maybe [Double]
     }
     deriving (Eq, Show, Generic)
 

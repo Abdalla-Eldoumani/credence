@@ -180,8 +180,9 @@ export function CoinVisualizer({ method, flips, priorA, priorB, runToken }: Coin
     teardown();
 
     const begin = async () => {
+      let runId: string;
       try {
-        await startRun(engineBaseUrl, request);
+        runId = await startRun(engineBaseUrl, request);
       } catch (error) {
         if (cancelled) return;
         setErrorMessage(error instanceof Error ? error.message : "could not start the run");
@@ -190,7 +191,7 @@ export function CoinVisualizer({ method, flips, priorA, priorB, runToken }: Coin
       }
       if (cancelled) return;
 
-      subscriptionRef.current = subscribeRun(engineBaseUrl, {
+      subscriptionRef.current = subscribeRun(engineBaseUrl, runId, {
         onSummary: (summary) => {
           if (cancelled) return;
           setMeanReadout(summary.mean);
@@ -240,15 +241,16 @@ export function CoinVisualizer({ method, flips, priorA, priorB, runToken }: Coin
       samples: REQUESTED_SAMPLES,
     };
     void (async () => {
+      let runId: string;
       try {
-        await startRun(engineBaseUrl, request);
+        runId = await startRun(engineBaseUrl, request);
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "could not start the run");
         setState("error");
         return;
       }
       teardown();
-      subscriptionRef.current = subscribeRun(engineBaseUrl, {
+      subscriptionRef.current = subscribeRun(engineBaseUrl, runId, {
         onSummary: (summary) => {
           setMeanReadout(summary.mean);
           setBatchReadout(summary.batchIndex);
