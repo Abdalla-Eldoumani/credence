@@ -37,6 +37,20 @@ const demos: Demo[] = [
       "Watch importance sampling and Metropolis-Hastings concentrate on one hidden source from the same data, side by side, each cloud converging at once.",
     method: "importance vs metropolis",
   },
+  {
+    href: "/tracking",
+    title: "Tracking",
+    description:
+      "Track a moving target from noisy reads with a particle filter. A weighted cloud of plausible positions follows the hidden target over time as the estimate locks on.",
+    method: "particle filter",
+  },
+  {
+    href: "/mixture",
+    title: "Mixture",
+    description:
+      "Cluster synthetic data with a Gaussian mixture. The posterior over the cluster means concentrates onto the planted clusters as the run converges.",
+    method: "gaussian mixture",
+  },
 ];
 
 export default function Home() {

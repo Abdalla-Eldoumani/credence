@@ -55,7 +55,30 @@ export type RegressionDataset = { tag: "Regression"; points: [number, number][] 
 // importance weights.
 export type LocalizationDataset = { tag: "Localization"; readings: number[] };
 
-export type Dataset = CoinDataset | RegressionDataset | LocalizationDataset;
+// The tracking dataset: the noisy observation sequence of a moving target, one
+// scalar read per time step. The wire shape matches the server
+// (Tracking{observations:[...]}), which feeds it to the particle filter; the latent
+// is the hidden target position at each step, and a batch's draws are the filtering
+// particle cloud at that step with their normalized weights (the opacity channel),
+// so as the batch index advances the cloud walks along the trajectory.
+export type TrackingDataset = { tag: "Tracking"; observations: number[] };
+
+// The mixture dataset: the synthetic data points to be clustered. The wire field is
+// mixturePoints, not points: the server's Mixture accessor is datasetMixturePoints,
+// which the dataset de-prefix (drop "dataset") turns into mixturePoints (Regression
+// already owns the plain points field with a different element type, so the mixture's
+// points carry a distinct name). The server runs importance on the collapsed Gaussian
+// mixture; a batch's draws are the recovered (sorted) cluster means concentrating on
+// the planted clusters, carrying no per-draw weight (the per-cluster concentration is
+// the story, not opacity).
+export type MixtureDataset = { tag: "Mixture"; mixturePoints: number[] };
+
+export type Dataset =
+  | CoinDataset
+  | RegressionDataset
+  | LocalizationDataset
+  | TrackingDataset
+  | MixtureDataset;
 
 // The POST body that starts a run.
 export type RunRequest = {
@@ -197,4 +220,28 @@ export async function startRegressionRun(baseUrl: string, request: RunRequest): 
  */
 export async function startLocalizationRun(baseUrl: string, request: RunRequest): Promise<string> {
   return postRun(baseUrl, "/run/localization", request);
+}
+
+/**
+ * Start a tracking run on the engine. POSTs the RunRequest to /run/tracking (which
+ * the server matches to its Tracking dataset and drives with the particle filter)
+ * and resolves to the RunId. The stream half is shared with the other demos:
+ * subscribeRun(baseUrl, runId, ...) drains the run named by that RunId, and its
+ * batches carry the filtering cloud's per-draw weights the visualizer scales
+ * particle opacity by as the cloud walks the target's trajectory.
+ */
+export async function startTrackingRun(baseUrl: string, request: RunRequest): Promise<string> {
+  return postRun(baseUrl, "/run/tracking", request);
+}
+
+/**
+ * Start a mixture run on the engine. POSTs the RunRequest to /run/mixture (which the
+ * server matches to its Mixture dataset and drives with importance on the collapsed
+ * Gaussian mixture) and resolves to the RunId. The stream half is shared:
+ * subscribeRun(baseUrl, runId, ...) drains the run, and its batches carry the
+ * recovered (sorted) cluster means as draws (weights null) concentrating on the
+ * planted clusters.
+ */
+export async function startMixtureRun(baseUrl: string, request: RunRequest): Promise<string> {
+  return postRun(baseUrl, "/run/mixture", request);
 }

@@ -59,9 +59,12 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Primitive (RealWorld)
 import Credence.Inference.Importance (importanceSamples, normalizedLogWeights, posteriorMean)
 import Credence.Inference.MH (mhChain)
+import Credence.Inference.SMC (CloudStep (..), FilterStep (..), particleCloud)
 import Credence.Model (Model, coinModel)
 import Credence.Model.Localization (localize)
+import Credence.Model.Mixture (gaussianMixtureCollapsed)
 import Credence.Model.Regression (linearRegression)
+import Credence.Model.Tracking (trackingModel)
 import Credence.Wire (
     Batch (..),
     Dataset (..),
@@ -73,6 +76,7 @@ import Credence.Wire (
  )
 import Data.Aeson (decode, encode)
 import Data.ByteString.Builder (Builder, lazyByteString)
+import Data.List (sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -204,6 +208,8 @@ main = do
         post "/run/coin" (startRun registry Coin{datasetFlips = []})
         post "/run/regression" (startRun registry Regression{datasetPoints = []})
         post "/run/localization" (startRun registry Localization{datasetReadings = []})
+        post "/run/tracking" (startRun registry Tracking{datasetObservations = []})
+        post "/run/mixture" (startRun registry Mixture{datasetMixturePoints = []})
         -- GET drains one run's queue as an event stream, keyed by the RunId
         -- captured from the path.
         get "/stream/:runId" (streamRun registry)
@@ -256,6 +262,8 @@ matchDataset :: Dataset -> Dataset -> Maybe Dataset
 matchDataset Coin{} d@Coin{} = Just d
 matchDataset Regression{} d@Regression{} = Just d
 matchDataset Localization{} d@Localization{} = Just d
+matchDataset Tracking{} d@Tracking{} = Just d
+matchDataset Mixture{} d@Mixture{} = Just d
 matchDataset _ _ = Nothing
 
 {- | Allocate and register a fresh run, or refuse if the registry is full.
@@ -393,6 +401,14 @@ computeBatch ::
     Int ->
     Gen RealWorld ->
     IO (Summary, [Double], Maybe [Double])
+-- The tracking and mixture datasets fix their own interpreter (the particle filter
+-- and importance on the collapsed mixture), so they branch on the dataset before the
+-- method switch; the existing Coin/Regression/Localization datasets run the chosen
+-- method on a 'Model Double' exactly as before.
+computeBatch _ (Tracking observations) _ idx gen =
+    computeTrackingBatch observations idx gen
+computeBatch _ (Mixture points) n idx gen =
+    computeMixtureBatch points n idx gen
 computeBatch method dataset n idx gen =
     case method of
         Importance -> do
@@ -436,7 +452,119 @@ computeBatch method dataset n idx gen =
                         }
             pure (summ, draws, Nothing)
 
-{- | Build the 'Credence.Model' the run conditions on from its 'Dataset'.
+{- | The number of particles the tracking filter runs with. Fixed (not tied to the
+request's sample budget, which paces the batch sequence below): the cloud is a
+density a few hundred drawn dots already read as, but the filter itself wants enough
+particles that the filtering mean tracks cleanly, so it runs a healthy population and
+the wire thins it to 'subsampleSize' for the client.
+-}
+trackingParticles :: Int
+trackingParticles = 2000
+
+{- | One tracking batch: advance the particle filter to time step @idx@ along the
+observation sequence and emit that step's filtering cloud.
+
+The filter is run over the first @idx + 1@ observations (clamped to the sequence
+length) and the LAST step's 'CloudStep' is returned: its filtering mean and variance
+as the 'Summary' and its ESS as the importance-style diagnostic, and its particle
+population (the scalar states, thinned) as the draws with their NORMALIZED weights as
+the opacity-by-weight channel the cloud reads. So as the worker steps @idx = 0, 1,
+...@ the emitted cloud walks along the trajectory, which is the target moving over
+time the visualizer renders. The filter reruns from the start each batch (cheap for a
+short sequence, and the same redundant-but-deterministic shape the importance arm
+uses), threading the IO generator; the filtering distribution at a step is stable
+across reruns, so the cloud reads as a settled population advancing rather than
+jumping. Only normalized summary weights cross the wire, never a raw log-weight.
+-}
+computeTrackingBatch :: [Double] -> Int -> Gen RealWorld -> IO (Summary, [Double], Maybe [Double])
+computeTrackingBatch observations idx gen = do
+    -- How far along the trajectory this batch reveals: step idx, clamped to the last
+    -- observation so batches past the sequence end hold on the final filtering cloud.
+    let upTo = min (idx + 1) (length observations)
+        shown = take (max 1 upTo) observations
+    cloud <- particleCloud trackingParticles 0.5 trackingModel shown gen
+    let lastStep = V.last cloud
+        fs = csStep lastStep
+        states = VU.toList (csStates lastStep)
+        ws = VU.toList (csWeights lastStep)
+        draws = thin subsampleSize states
+        -- Thin the weights by the same stride and order as the states, so weights !! i
+        -- belongs to draws !! i (both are length trackingParticles before thinning).
+        weights = thin subsampleSize ws
+        summ =
+            Summary
+                { summaryBatchIndex = idx
+                , summaryMean = fsMean fs
+                , summaryVariance = fsVariance fs
+                , summaryAcceptanceRate = Nothing
+                , summaryEffectiveSampleSize = Just (fsEss fs)
+                }
+    pure (summ, draws, Just weights)
+
+{- | The mixture prior and known parameters the server fixes, matching the recovery
+test: a broad @Normal(0, 10)@ prior on each cluster mean, three equally-weighted
+clusters, and a known cluster standard deviation @0.7@. Fixed here rather than sent
+on the wire, the same way the other models' priors are.
+-}
+mixturePriorMu, mixturePriorSigma, mixtureSigma :: Double
+mixturePriorMu = 0.0
+mixturePriorSigma = 10.0
+mixtureSigma = 0.7
+
+mixtureWeights :: [Double]
+mixtureWeights = [1.0, 1.0, 1.0]
+
+{- | One mixture batch: run importance sampling on the collapsed Gaussian mixture at
+run length @n@ and emit the recovered cluster means.
+
+The collapsed mixture ('gaussianMixtureCollapsed') is the recoverable form (the
+assignment-sampling form degenerates under importance; see the model haddock). Each
+particle returns the @k@ cluster means; the summary's @mean@ is the posterior mean of
+the average cluster location (a single scalar the wire's 'Summary' carries) and the
+ESS is the importance ESS, while the draws are the RECOVERED cluster means with
+LABEL SWITCHING handled the same way the recovery test does: each particle's mean
+vector is sorted before its weighted contribution, so the streamed cluster locations
+are the identifiable sorted means the visualizer lands on the planted clusters. The
+per-draw weights are the normalized importance weights of the particles whose sorted
+means are emitted, the opacity channel. Only normalized weights cross the wire.
+-}
+computeMixtureBatch :: [Double] -> Int -> Int -> Gen RealWorld -> IO (Summary, [Double], Maybe [Double])
+computeMixtureBatch points n idx gen = do
+    samples <-
+        importanceSamples
+            n
+            (gaussianMixtureCollapsed mixturePriorMu mixturePriorSigma mixtureWeights mixtureSigma points)
+            gen
+    let k = length mixtureWeights
+        -- The recovered cluster means, label switching handled by sorting each
+        -- particle's mean vector before the posterior mean of each sorted coordinate.
+        recovered = [posteriorMean samples (\ms -> sort ms !! j) | j <- [0 .. k - 1]]
+        -- A single scalar summary mean the wire carries: the average recovered cluster
+        -- location (the cluster means themselves are the draws below).
+        summaryMeanVal = sum recovered / fromIntegral k
+        second = posteriorMean samples (\ms -> let m = sum ms / fromIntegral (length ms) in m * m)
+        var = max 0 (second - summaryMeanVal * summaryMeanVal)
+        -- ESS from the normalized importance weights: 1 / sum(w_i^2).
+        logWs = VU.convert (V.map snd samples)
+        normW = normalizedLogWeights logWs
+        ess = 1 / VU.sum (VU.map (\w -> w * w) normW)
+        -- The draws are the recovered (sorted) cluster means; there are k of them, so
+        -- no thinning is needed and every cluster reaches the client. They carry no
+        -- per-draw importance weight (they are posterior summaries, not particles), so
+        -- the cloud renders them uniformly; the per-cluster concentration is the story.
+        draws = recovered
+        summ =
+            Summary
+                { summaryBatchIndex = idx
+                , summaryMean = summaryMeanVal
+                , summaryVariance = var
+                , summaryAcceptanceRate = Nothing
+                , summaryEffectiveSampleSize = Just ess
+                }
+    pure (summ, draws, Nothing)
+
+{- | Build the 'Credence.Model' the run conditions on from its 'Dataset', for the
+datasets whose run is a 'Model Double' under the chosen method.
 
 The coin model uses a Beta(2,2) prior, the same weakly-informative prior the
 conjugate gate runs on; the regression model uses the broad Normal(0,3) prior and
@@ -445,12 +573,16 @@ Normal(0,5) prior and unit sensor noise the recovery test plants the source unde
 These priors are fixed here rather than sent on the wire: the demos are about
 visualizing convergence for a known model, not about tuning priors from the client.
 The model is structure only; building it draws nothing, and the chosen interpreter
-is what runs it.
+is what runs it. The tracking and mixture datasets do not pass through here; they fix
+their own interpreter in 'computeBatch' (the particle filter and importance on the
+collapsed mixture), so 'buildModel' covers only the three 'Model Double' datasets.
 -}
 buildModel :: Dataset -> Model Double
 buildModel (Coin flips) = coinModel 2 2 flips
 buildModel (Regression pts) = linearRegression 0 3 1 pts
 buildModel (Localization readings) = localize 0 5 1 readings
+buildModel (Tracking _) = error "buildModel: tracking runs the particle filter, not a Model"
+buildModel (Mixture _) = error "buildModel: mixture runs the collapsed model via computeBatch"
 
 {- | Evenly thin a list to at most @k@ elements, preserving order and span.
 
@@ -494,7 +626,7 @@ streamRun registry = do
             -- Unknown run: a single comment frame keeps the connection from hanging
             -- and tells a client to POST first. EventSource ignores comment lines.
             stream $ \send flush -> do
-                send (lazyByteString ": no active run for this id, post to /run/coin, /run/regression, or /run/localization first\n\n")
+                send (lazyByteString ": no active run for this id, post to /run/coin, /run/regression, /run/localization, /run/tracking, or /run/mixture first\n\n")
                 flush
         Just st ->
             stream $ \send flush -> do

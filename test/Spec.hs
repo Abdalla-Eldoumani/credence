@@ -18,9 +18,23 @@ import Credence.Inference.Importance (
     posteriorMean,
  )
 import Credence.Inference.MH (mhChain)
+import Credence.Inference.SMC (
+    FilterStep (..),
+    StateSpace (..),
+    effectiveSampleSize,
+    particleFilter,
+    systematicResample,
+ )
 import Credence.Model (Model (..), coinModel, observe, sample)
 import Credence.Model.Localization (localize)
+import Credence.Model.Mixture (gaussianMixtureCollapsed)
 import Credence.Model.Regression (linearRegression)
+import Credence.Model.Tracking (
+    trackR,
+    trackingModel,
+    trajectoryObservations,
+    trueTrajectory,
+ )
 import Credence.Trace (traceAddresses, traceModel)
 import Credence.Wire (
     Batch (..),
@@ -32,6 +46,7 @@ import Credence.Wire (
     Summary (..),
  )
 import Data.Aeson (decode, encode)
+import Data.List (sort)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
@@ -74,6 +89,9 @@ tests =
         , normalNormalTests
         , crossSeedRegressionTests
         , localizationRecoveryTests
+        , smcSanityTests
+        , trackingRecoveryTests
+        , mixtureRecoveryTests
         , wireTests
         ]
 
@@ -1122,6 +1140,442 @@ localizationRecoveryTests =
                 (varMany < varFew)
         ]
 
+{- | One step of the analytic scalar Kalman filter, the known answer the particle
+filter is judged against.
+
+For the linear-Gaussian random walk @x_t = x_{t-1} + N(0, q)@ observed as
+@y_t = x_t + N(0, r)@, the filtering distribution stays Normal and its mean and
+variance follow the standard scalar Kalman recursion (Kalman 1960; any state-space
+text). Given the previous posterior @(m, p)@ and a new observation @y@:
+
+    predict:  m' = m,        p' = p + q
+    update:   k  = p' / (p' + r)
+              m_new = m' + k * (y - m')
+              p_new = (1 - k) * p'
+
+The transition is a pure random walk so the predicted mean equals the previous mean;
+the Kalman gain @k@ blends the prediction with the observation by their relative
+precisions. This is hand-derived from the model, not taken from a library, and it is
+the oracle the particle filter's per-step mean and variance must match.
+-}
+kalmanStep :: Double -> Double -> (Double, Double) -> Double -> (Double, Double)
+kalmanStep q r (m, p) y = (mNew, pNew)
+  where
+    -- Predict: the random walk leaves the mean put and inflates the variance by q.
+    pPredict = p + q
+    -- Update: gain by relative precision, then blend the prediction and the reading.
+    gain = pPredict / (pPredict + r)
+    mNew = m + gain * (y - m)
+    pNew = (1 - gain) * pPredict
+
+{- | Run the analytic Kalman filter over an observation sequence from a Normal prior,
+returning the per-step posterior @(mean, variance)@ list (one per observation).
+-}
+kalmanFilter :: Double -> Double -> (Double, Double) -> [Double] -> [(Double, Double)]
+kalmanFilter q r prior = drop 1 . scanl (kalmanStep q r) prior
+
+{- | The linear-Gaussian state-space fixture shared by the Kalman known-answer
+oracle: a scalar random walk with Gaussian observations, plus its parameters.
+
+The state is a 'Double' and the model is expressed entirely through 'normalDist':
+the initial prior is @Normal(km0, sqrt kp0)@, the transition is the random walk
+@x_t ~ Normal(x_{t-1}, sqrt kq)@, and the observation likelihood is
+@y_t ~ Normal(x_t, sqrt kr)@ scored by the Normal log-density. The parameters are
+moderate so the filtering posterior stays well-conditioned and the effective sample
+size stays healthy across the sequence (a sharp likelihood would collapse the cloud
+and force a resample every step, which the ESS oracle covers separately).
+-}
+kq, kr, km0, kp0 :: Double
+kq = 0.5
+kr = 1.0
+km0 = 0.0
+kp0 = 1.0
+
+{- | The literal observation sequence for the Kalman oracle, fixed so the run is
+deterministic. A short walk that drifts up then settles, enough steps to exercise the
+recursion without the cloud needing an unreasonable particle count.
+-}
+kalmanObservations :: [Double]
+kalmanObservations = [0.8, 1.6, 2.1, 1.9, 3.0, 2.7, 3.4]
+
+-- | The state-space model for 'kalmanObservations', as a 'StateSpace Double'.
+kalmanModel :: StateSpace Double
+kalmanModel =
+    StateSpace
+        { ssInit = normalDist km0 (sqrt kp0)
+        , ssTransition = \x -> normalDist x (sqrt kq)
+        , ssLogLik = \x y -> logDensityDist (normalDist x (sqrt kr)) y
+        }
+
+{- | THE particle-filter gate: the three correctness sanity oracles.
+
+A particle filter that quietly biases the distribution is the same failure mode as a
+biased sampler (the correctness discipline), so it gets the same known-answer
+treatment. Three oracles, each under a FIXED ST seed:
+
+1. Effective sample size behaves as expected: it drops as weights concentrate and
+   resets toward N after a resample.
+2. Resampling is unbiased: it does not shift the empirical mean.
+3. Known-answer recovery: on a linear-Gaussian model the per-step filtering mean and
+   variance match the analytic Kalman filter, the strongest oracle the CONTEXT and
+   the discipline call for.
+-}
+smcSanityTests :: TestTree
+smcSanityTests =
+    testGroup
+        "particle-filter sanity (ESS, unbiased resampling, Kalman known-answer)"
+        [ testCase "ESS drops on concentrated weights and resets toward N after a resample" $ do
+            let
+                count = 1000 :: Int
+                n = fromIntegral count :: Double
+                -- Equal log-weights: every particle contributes, so ESS is exactly N.
+                equalLogWeights = VU.replicate count 0
+                essEqual = effectiveSampleSize equalLogWeights
+                -- A concentrated weight vector: one particle far above the rest (a
+                -- log-weight of 0 against -20 puts ~exp(20) times the mass on it), so
+                -- almost all the mass is on one particle and ESS sits near 1.
+                concentratedLogWeights =
+                    VU.generate count (\i -> if i == 0 then 0 else -20)
+                essConcentrated = effectiveSampleSize concentratedLogWeights
+                -- Resample the concentrated population under a FIXED seed, then score
+                -- the offspring with uniform weights (which is how the filter resets
+                -- them). The reset population's ESS is exactly N because uniform
+                -- weights have ESS N; this is the "resets toward N" the discipline names.
+                essAfterResample = runST $ do
+                    g <- initialize fixedSeed
+                    _ <- systematicResample concentratedLogWeights (VU.enumFromN 0 count) g
+                    pure (effectiveSampleSize (VU.replicate count 0))
+            -- ESS is exact arithmetic on the weights, not a statistical estimate, so
+            -- the tolerances are tight round-off windows, not standard-error windows.
+            -- Equal weights give ESS = N exactly.
+            assertBool
+                ("equal-weight ESS " <> show essEqual <> " is N = " <> show n)
+                (abs (essEqual - n) < 1e-6)
+            -- Concentrated weights collapse ESS to near 1: with one mass at exp(0) and
+            -- 999 at exp(-20), ESS = 1 / sum p_i^2 is within a hair of 1, far below N.
+            assertBool
+                ("concentrated ESS " <> show essConcentrated <> " is near 1 and far below N = " <> show n)
+                (essConcentrated < 1.001 && essConcentrated < n / 100)
+            -- After the resample the weights are reset to uniform, so ESS is back to N:
+            -- the resample has refocused the population away from the degenerate state.
+            assertBool
+                ("post-resample ESS " <> show essAfterResample <> " resets to N = " <> show n)
+                (abs (essAfterResample - n) < 1e-6)
+        , testCase "systematic resampling does not shift the empirical mean (unbiased, fixed seed)" $ do
+            let
+                -- A weighted particle cloud laid out as a contiguous grid of values
+                -- across [-4, 4] carrying a smooth bell-shaped weight profile centered
+                -- at 0.7. This mirrors a real filtering posterior (values spread over a
+                -- range, weight peaked in the middle and tapering at the tails) rather
+                -- than a repeated short cycle. The ordering matters: systematic
+                -- resampling's single regularly spaced comb is sensitive to particle
+                -- ORDER, and a periodically tiled weight pattern resonates with the comb
+                -- and biases the resampled mean (Doucet and Johansen 2009 note the
+                -- order-dependence; Hol, Schon, and Gustafsson 2006 demonstrate it). A
+                -- monotone grid with a smoothly varying weight has no such period, so the
+                -- comb samples it faithfully, which is the realistic case the filter
+                -- actually resamples.
+                count = 20000 :: Int
+                -- Values evenly spaced on [-4, 4].
+                gridValue i = -4 + 8 * fromIntegral i / fromIntegral (count - 1)
+                values = VU.generate count gridValue :: VU.Vector Double
+                -- A Gaussian-shaped (unnormalized) weight profile peaked at 0.7, width
+                -- 1.3, supplied as a log-weight directly: log w_i = -((v_i - mu)^2)/(2 s^2).
+                -- normalizedLogWeights handles the normalization across the population.
+                profileMu = 0.7 :: Double
+                profileS = 1.3 :: Double
+                logWeights =
+                    VU.map (\v -> negate ((v - profileMu) * (v - profileMu)) / (2 * profileS * profileS)) values
+                -- The weighted mean BEFORE resampling, the target. Computed directly
+                -- from the normalized weights and values.
+                normalized = normalizedLogWeights logWeights
+                weightedMeanBefore = VU.sum (VU.zipWith (*) normalized values)
+                -- Resample under a FIXED seed, then take the PLAIN mean of the resampled
+                -- (now equally weighted) particle values: this is the empirical mean
+                -- after resampling, which must match the weighted mean before.
+                plainMeanAfter = runST $ do
+                    g <- initialize fixedSeed
+                    ancestors <- systematicResample logWeights (VU.enumFromN 0 count) g
+                    let resampled = VU.backpermute values ancestors
+                    pure (VU.sum resampled / fromIntegral (VU.length resampled))
+                -- Tolerance. Resampling is unbiased, so the resampled mean estimates the
+                -- weighted mean with a standard error bounded by the cloud's weighted
+                -- spread over sqrt(count). The weighted sd here is ~1.2, so at
+                -- count = 20000 the SE is ~ 1.2/sqrt(20000) ~ 0.0085; systematic
+                -- resampling has variance no larger than multinomial, so the 0.05 window
+                -- is ~6 SE, generous enough that a correct (unbiased) resample clears it
+                -- essentially always while a biased resample (one that, say, favored the
+                -- high-weight center or dropped the tails) would shift the mean past it.
+                tol = 0.05
+            assertBool
+                ("plain mean after resample " <> show plainMeanAfter <> " near weighted mean before " <> show weightedMeanBefore <> " (tol " <> show tol <> ")")
+                (abs (plainMeanAfter - weightedMeanBefore) < tol)
+        , testCase "filtering mean and variance match the analytic Kalman filter per step (fixed seed)" $ do
+            let
+                -- Many particles so the per-step filtering moments are low-variance
+                -- estimates of the Kalman posterior; the threshold 0.5 resamples when
+                -- fewer than half the particles effectively contribute.
+                count = 200000 :: Int
+                threshold = 0.5 :: Double
+                -- The analytic oracle: the scalar Kalman filter over the same
+                -- observations from the same Normal prior.
+                kalman = kalmanFilter kq kr (km0, kp0) kalmanObservations
+                -- The particle filter under a FIXED ST seed.
+                steps = runST $ do
+                    g <- initialize fixedSeed
+                    V.toList <$> particleFilter count threshold kalmanModel kalmanObservations g
+                -- Pair each step's particle estimate with the Kalman answer.
+                paired = zip steps kalman
+                -- Tolerances. The posterior sd over the sequence is on the order of
+                -- sqrt(kr) ~ 1 (the steady-state filtering variance for q=0.5, r=1 is
+                -- ~0.5, sd ~0.7). With a healthy ESS that stays a large fraction of
+                -- count, the filtering-mean SE ~ posterior_sd / sqrt(ESS); even at a
+                -- conservative ESS ~ count/4 = 50000 that is ~0.7/224 ~ 0.003, so a 0.05
+                -- mean window is ~15 SE. The variance is a second-moment estimator and
+                -- noisier, and the resampling step adds a little extra spread, so it
+                -- gets the looser 0.05 window against a posterior variance of ~0.5; that
+                -- is still a tight relative window a correct filter clears essentially
+                -- always, while a filter that dropped the observation weight or skipped
+                -- the resample would diverge from the Kalman track by far more.
+                meanTol = 0.05
+                varTol = 0.05
+            mapM_
+                ( \(fs, (km, kp)) -> do
+                    assertBool
+                        ("filtering mean " <> show (fsMean fs) <> " near Kalman mean " <> show km <> " (tol " <> show meanTol <> ")")
+                        (abs (fsMean fs - km) < meanTol)
+                    assertBool
+                        ("filtering variance " <> show (fsVariance fs) <> " near Kalman variance " <> show kp <> " (tol " <> show varTol <> ")")
+                        (abs (fsVariance fs - kp) < varTol)
+                )
+                paired
+        ]
+
+{- | The tracking seed for the planted trajectory: the suite's 'fixedSeed', so the
+walk the filter is judged against is the same every run.
+-}
+trackTrajectorySeed :: VU.Vector Word32
+trackTrajectorySeed = fixedSeed
+
+{- | A distinct seed for the observation noise, so the noisy reads are independent of
+the walk rather than sharing its stream. A second fixed vector keeps the
+observations deterministic while uncorrelated with the trajectory.
+-}
+trackObservationSeed :: VU.Vector Word32
+trackObservationSeed = VU.fromList [0x7472, 0x6163, 0x6b6f, 0x6273]
+
+{- | A third fixed seed for the particle filter itself, so the filtering run is
+reproducible and independent of the data-generating streams.
+-}
+trackFilterSeed :: VU.Vector Word32
+trackFilterSeed = VU.fromList [0x7466, 0x696c, 0x7465, 0x7273]
+
+{- | THE tracking gate: the particle filter's estimate follows the moving target
+under a fixed seed (the spec's programmatic gate).
+
+The model-level oracle for the tracking demo, the particle-filter analogue of the
+localization recovery test: no closed form is assumed, the planted trajectory is the
+oracle. A hidden random-walk target is planted under a fixed seed, the matching noisy
+observations are generated and fed to 'particleFilter', and the filter's per-step
+filtering mean must FOLLOW the true trajectory. Two assertions, both against the
+hidden states the filter never sees directly:
+
+1. The mean absolute per-step tracking error stays small. The filter sees only the
+   noisy observations @y_t ~ Normal(x_t, trackR)@, so its filtering mean cannot equal
+   the hidden @x_t@ exactly; the right target is that, averaged over the run, the
+   estimate sits within a fraction of the observation noise of the truth, the
+   signature of a filter that tracks rather than drifts.
+2. The final estimate is near the final true state, so the filter is locked on at the
+   end of the run, not merely close on average while lagging.
+
+This is the third correctness treatment of the SMC (after the ESS and
+unbiased-resampling oracles and the Kalman known-answer gate from 05-01), now at the
+model level the CONTEXT asks of the tracking demo: the estimate follows the target.
+
+Tolerances, in the standard-error discipline of the localization gate. The steady-
+state filtering posterior for a random walk with @q = trackQ = 0.6@ and
+@r = trackR = 1.0@ has standard deviation on the order of @sqrt(r) ~ 1@ (the
+steady-state filtering variance solves @p = (p + q) r / (p + q + r)@, giving
+@p ~ 0.59@, sd @~ 0.77@). With many particles the per-step filtering mean is a
+low-variance estimate of that posterior mean, whose own distance from the hidden
+state is itself about that posterior sd, so a mean absolute tracking error around
+@0.77@ is what a CORRECT filter delivers. The window is @1.2@ (about 1.5x the
+posterior sd and well above the per-step estimator noise at @count = 100000@): a
+filter that tracks clears it essentially always, while a filter that ignored the
+observation weight or never resampled would drift away from the walk and blow past
+it (the 05-01 teeth check showed a weight-dropping filter misses the Kalman track by
+~9x its tolerance, the same failure this would catch). The final-state window is the
+looser @2.0@ (about 2.6 posterior sd), since a single step is noisier than the run
+average; it still pins the filter to the end of the walk rather than letting it sit
+near the prior.
+-}
+trackingRecoveryTests :: TestTree
+trackingRecoveryTests =
+    testGroup
+        "tracking planted-trajectory recovery (the tracking gate, the spec)"
+        [ testCase "the filter estimate follows the moving target under a fixed seed" $ do
+            let
+                -- A planted random-walk trajectory of moderate length, and the noisy
+                -- observations of it, both under fixed seeds so the run is deterministic.
+                steps = 40
+                trueStates = trueTrajectory trackTrajectorySeed steps
+                observations = trajectoryObservations trackObservationSeed trueStates
+                -- Enough particles that the per-step filtering mean is a low-variance
+                -- estimate of the filtering posterior mean; threshold 0.5 resamples
+                -- when fewer than half the particles effectively contribute. The mean
+                -- tracking error is dominated by the observation-noise floor, not the
+                -- particle count (it is flat from 5000 to 20000 particles at this
+                -- model), so 5000 is ample and keeps the suite fast.
+                count = 5000 :: Int
+                threshold = 0.5 :: Double
+                -- The particle filter under a FIXED ST seed, over the observations only.
+                filterMeans = runST $ do
+                    g <- initialize trackFilterSeed
+                    fmap (map fsMean . V.toList) (particleFilter count threshold trackingModel observations g)
+                -- The per-step tracking errors against the hidden states the filter
+                -- never saw, and their mean absolute value (the average tracking error).
+                errors = zipWith (\est true -> abs (est - true)) filterMeans trueStates
+                meanAbsError = sum errors / fromIntegral (length errors)
+                -- The final estimate against the final true state: the filter must be
+                -- locked on at the end, not just close on average.
+                finalError = abs (last filterMeans - last trueStates)
+                -- Windows justified above in terms of the steady-state filtering sd
+                -- (~0.77 for q=0.6, r=1.0) and the observation noise trackR.
+                meanErrTol = 1.2
+                finalErrTol = 2.0
+            assertBool
+                ("mean absolute tracking error " <> show meanAbsError <> " within " <> show meanErrTol <> " (steady-state filtering sd ~0.77, obs noise " <> show trackR <> ")")
+                (meanAbsError < meanErrTol)
+            assertBool
+                ("final estimate " <> show (last filterMeans) <> " near final true state " <> show (last trueStates) <> " (tol " <> show finalErrTol <> ")")
+                (finalError < finalErrTol)
+        ]
+
+{- | The planted clusters for the mixture recovery oracle: three well-separated means
+and the mixing weights, the truth the recovered means are compared against.
+
+The means are spread far apart relative to the cluster spread 'mixSigma' (gaps of 6
+and 5 against sigma 0.7, about 8 sigma), so each synthetic point's likelihood is
+dominated by the nearest cluster and the posterior over the means concentrates
+sharply on the planted values, which is what makes the planted means a sharp oracle.
+The weights are equal, so each cluster is equally represented.
+-}
+plantedMeans :: [Double]
+plantedMeans = [-6.0, 0.0, 5.0]
+
+mixWeights :: [Double]
+mixWeights = [1.0, 1.0, 1.0]
+
+{- | The known shared cluster standard deviation. Small relative to the gaps between
+'plantedMeans' so the clusters are well separated and the recovery target is sharp.
+-}
+mixSigma :: Double
+mixSigma = 0.7
+
+{- | The mixture prior parameters: a broad Normal on each cluster mean, wide enough
+to cover all three planted means without favoring any, the same broad-prior framing
+the localization model uses.
+-}
+mixMu0, mixSigma0 :: Double
+mixMu0 = 0.0
+mixSigma0 = 10.0
+
+{- | Synthetic data with the planted clusters: points tightly clustered around each
+of 'plantedMeans', LITERAL so every run is deterministic under the fixed seed. Each
+cluster's points are symmetric about its planted mean (the deviations sum to zero),
+so the cluster's sample mean is exactly the planted value and the recovery target is
+the planted mean itself rather than a finite-sample offset of it. Five points per
+cluster, fifteen in all, enough to pin each well-separated cluster.
+-}
+mixturePoints :: [Double]
+mixturePoints =
+    -- Around -6.0: five points summing to -30.0 (mean -6.0).
+    [-6.5, -5.5, -6.3, -5.7, -6.0]
+        -- Around 0.0: five points summing to 0.0 (mean 0.0).
+        ++ [-0.5, 0.5, -0.3, 0.3, 0.0]
+        -- Around 5.0: five points summing to 25.0 (mean 5.0).
+        ++ [4.6, 5.4, 4.7, 5.3, 5.0]
+
+{- | THE mixture gate: planted-cluster recovery under a fixed seed, with label
+switching handled (the spec, correctness oracle 4).
+
+The model-level oracle for the Gaussian mixture: no closed form, the planted cluster
+means are the oracle. Well-separated clusters are planted ('plantedMeans'), synthetic
+data is generated near them ('mixturePoints'), importance sampling is run on
+'gaussianMixtureCollapsed' under a fixed seed, and the posterior must recover the
+planted means. This is also the fourth model running under the importance interpreter
+unchanged, the operational-monad payoff: the mixture is built only from 'sample' and
+'observe' over the unchanged 'Credence.Model'.
+
+Why the COLLAPSED form. The generative 'gaussianMixture' draws a categorical
+assignment per point; under importance sampling that proposal almost never lands
+every assignment right, so the weights concentrate on a single particle (effective
+sample size near 1) and no particle budget recovers the means (measured directly: at
+@n = 400000@ the ESS is 1.0 and the means come back near their lucky single-particle
+draw). 'gaussianMixtureCollapsed' sums the assignment out analytically, which is
+exact and leaves the same posterior on the means but removes the lottery, so the ESS
+is healthy (tens to hundreds) and the means are recoverable. Both are 'sample'/
+'observe' over the unchanged monad; the collapsed one is the Rao-Blackwellized
+version of the very same model.
+
+CRITICAL: LABEL SWITCHING, handled by a WITHIN-PARTICLE sort. The mixture posterior
+is invariant to permuting the cluster labels, so the @k@ mean-latents are
+EXCHANGEABLE: each coordinate's marginal posterior is the SAME mixture over all
+clusters, and a per-coordinate posterior mean averages the clusters together (it
+comes out near the grand mean, recovering none of them; measured directly, the
+unsorted per-coordinate means are all near @(-6 + 0 + 5)/3 ~ -0.33@). The
+canonicalization the correctness discipline prescribes is to impose an
+identifiability constraint by ordering: SORT each particle's mean vector, then take
+the posterior mean of each sorted coordinate, so the j-th sorted coordinate's
+posterior mean lands on the j-th planted mean. The projection @\\ms -> sort ms !! j@
+is that within-particle sort; 'posteriorMean' then weights it across particles. The
+recovered values are finally compared to the sorted planted means. Without this sort
+the assertion would test a property the posterior does not have.
+
+Tolerance, in the standard-error discipline of the other recovery gates. With the
+assignment collapsed the proposal is the broad prior @Normal(0, 10)@ and the
+likelihood (five tight Normal factors per well-separated cluster at @sigma = 0.7@) is
+sharp but no longer degenerate; the per-cluster posterior sd is about
+@sigma / sqrt(5) ~ 0.31@ and the clusters are separated by about 8 sigma, so the
+sorted-coordinate posterior means land within a few hundredths of the planted means
+(measured: @[-6.00, 0.02, 5.03]@ at @n = 200000@). A @0.3@ window (about 1x the
+per-cluster posterior sd, ~10x the observed error) clears a correct sampler
+essentially always while a mis-weighted sampler, which would leave the means near the
+prior mean 0, misses the outer clusters by 5 to 6 units, far past it.
+-}
+mixtureRecoveryTests :: TestTree
+mixtureRecoveryTests =
+    testGroup
+        "gaussian mixture planted-cluster recovery (the mixture gate, the spec)"
+        [ testCase "importance posterior recovers the planted cluster means, sorted (label switching)" $ do
+            let
+                k = length plantedMeans
+                -- Importance sampling on the COLLAPSED mixture under a FIXED ST seed.
+                -- The model returns the k-vector of cluster means; many particles so
+                -- the three-latent posterior mean is stable.
+                n = 200000
+                samples = runST $ do
+                    g <- initialize fixedSeed
+                    importanceSamples n (gaussianMixtureCollapsed mixMu0 mixSigma0 mixWeights mixSigma mixturePoints) g
+                -- LABEL SWITCHING: sort each particle's mean vector, THEN take the
+                -- posterior mean of each sorted coordinate. The within-particle sort
+                -- breaks the exchangeability of the means, so the j-th sorted
+                -- coordinate identifies the j-th cluster (a per-coordinate mean
+                -- without the sort would average all clusters together).
+                recovered = [posteriorMean samples (\ms -> sort ms !! j) | j <- [0 .. k - 1]]
+                plantedSorted = sort plantedMeans
+                -- Window justified above (~1x the per-cluster posterior sd ~0.31,
+                -- about 10x the observed recovery error).
+                tol = 0.3
+            mapM_
+                ( \(rec, planted) ->
+                    assertBool
+                        ("recovered cluster mean " <> show rec <> " near planted " <> show planted <> " (sorted, tol " <> show tol <> ")")
+                        (abs (rec - planted) < tol)
+                )
+                (zip recovered plantedSorted)
+        ]
+
 {- | The wire format round-trips through aeson, so the engine and the browser
 agree on every field.
 
@@ -1222,6 +1676,29 @@ wireTests =
                         , runRequestSamples = 4000
                         }
             assertRoundTripReq "RunRequest localization" req
+        , testCase "RunRequest for the tracking model round-trips" $ do
+            -- The fourth dataset: the noisy observation sequence of a moving target,
+            -- fed to the particle filter. Proves the Tracking tag the /run/tracking
+            -- route matches decodes here rather than at runtime.
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Tracking{datasetObservations = [1.0, 1.2, 0.9, 1.5]}
+                        , runRequestSamples = 20000
+                        }
+            assertRoundTripReq "RunRequest tracking" req
+        , testCase "RunRequest for the mixture model round-trips" $ do
+            -- The fifth dataset: the synthetic points to be clustered. Proves the
+            -- Mixture tag the /run/mixture route matches decodes here. The field is
+            -- mixturePoints (datasetPoints is taken by Regression with a different
+            -- element type, so the mixture's points carry a distinct field name).
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Mixture{datasetMixturePoints = [-6.1, 0.2, 5.0, -5.9]}
+                        , runRequestSamples = 50000
+                        }
+            assertRoundTripReq "RunRequest mixture" req
         , testCase "RunStarted (the POST run-id response) round-trips" $ do
             -- The body a run POST returns: the RunId the client then streams. A
             -- field that drifted here would break the start-to-subscribe handoff.
