@@ -1,9 +1,9 @@
 // Pure diagnostics helpers that MIRROR the engine's definitions, so the numbers
 // the panel shows are the same quantities the server computes, not a plausible
-// re-derivation (a hardening note). The engine supplies acceptanceRate and
+// re-derivation. The engine supplies acceptanceRate and
 // effectiveSampleSize directly on each Summary; these helpers compute the same
 // values from raw weights for the cases where the panel derives them, and are
-// pinned to hand-checked numbers by diagnostics.test.mjs so a wrong formula fails
+// pinned to hand-checked numbers by diagnostics.test.ts so a wrong formula fails
 // the test rather than rendering a smooth wrong figure.
 
 /**

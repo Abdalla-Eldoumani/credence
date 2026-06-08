@@ -10,10 +10,10 @@ import styles from "./Diagnostics.module.css";
 // them with the exact formulas in lib/diagnostics, which the node --test oracle
 // pins). When raw normalized weights are supplied instead, the ESS is computed
 // here through the same effectiveSampleSize helper, so the displayed number is the
-// tested quantity either way (a hardening note). A run that hits its length cap
+// tested quantity either way. A run that hits its length cap
 // without the chosen diagnostic settling surfaces a "not converged" note through
-// the accent and weight, the single status hue (design system, edge case
-// non-convergence).
+// the accent and weight, the single status hue from the design system, handling
+// the non-convergence case.
 
 type DiagnosticsProps = {
   // The latest running summary, or null before the first arrives.

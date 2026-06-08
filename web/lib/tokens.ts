@@ -1,5 +1,5 @@
 /*
-  The design tokens from the design notes, surfaced to TS as CSS var()
+  The design tokens, surfaced to TS as CSS var()
   references. Components that pass colors to SVG attributes (fill, stroke) read
   them from here so no hex is ever hardcoded; everything resolves to the same
   CSS variables declared in app/globals.css.

@@ -6,9 +6,9 @@ import { easeSettlePoints } from "@/lib/tokens";
 // target when a new summary arrives; the frame loop advances on the CLIENT clock
 // (requestAnimationFrame), so a burst of arrivals re-aims the tween rather than
 // snapping the bars. This decoupling of render pacing from network arrival is the
-// load-bearing motion contract (edge case slow/bursty network).
+// load-bearing motion contract under a slow or bursty network.
 
-// The posterior interpolation window from design system (180ms to 240ms); the
+// The posterior interpolation window from the design tokens (180ms to 240ms); the
 // midpoint keeps the morph in band.
 const DURATION_MS = 210;
 

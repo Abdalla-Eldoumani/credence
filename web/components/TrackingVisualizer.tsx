@@ -28,7 +28,7 @@ const MARGIN = { top: 16, right: 16, bottom: 32, left: 40 };
 const PLOT_W = VIEW_W - MARGIN.left - MARGIN.right;
 const PLOT_H = VIEW_H - MARGIN.top - MARGIN.bottom;
 
-// Particle radius (design system: 2px to 3px).
+// Particle radius (design tokens: 2px to 3px).
 const PARTICLE_RADIUS = 2.5;
 
 // The vertical band the particles jitter across, centered in the plot, so a dense
@@ -38,10 +38,10 @@ const JITTER_BOTTOM = MARGIN.top + PLOT_H * 0.8;
 
 // The per-frame work cap: the most particles drawn in one frame. The cloud is a
 // density, so a few hundred dots already read as the full spread; capping the count
-// keeps every frame bounded however many particles a batch carries (a hardening note).
+// keeps every frame bounded however many particles a batch carries.
 const MAX_PARTICLES = 300;
 
-// The opacity-by-weight range from design system: 0.25 at low weight to 0.9 at high.
+// The opacity-by-weight range from the design tokens: 0.25 at low weight to 0.9 at high.
 const ALPHA_LOW = 0.25;
 const ALPHA_HIGH = 0.9;
 // The uniform mid alpha used when there are no weights, so the cloud still reads as a
@@ -49,7 +49,7 @@ const ALPHA_HIGH = 0.9;
 // weights, but the fallback keeps the renderer total.
 const ALPHA_UNIFORM = 0.55;
 
-// The posterior interpolation window from design system (180ms to 240ms); the
+// The posterior interpolation window from the design tokens (180ms to 240ms); the
 // midpoint, matching the band and histogram tweens so every morph reads the same.
 const DURATION_MS = 210;
 
@@ -212,7 +212,7 @@ export function TrackingVisualizer({
   // Paint one frame: clear, grid, the particles at their eased x, then the estimate
   // and the latest-observation marks on top. Every color resolves through
   // getComputedStyle (resolveCssVar), so no hex is hardcoded; a missing token degrades
-  // to transparent, not a crash (a hardening note).
+  // to transparent, not a crash.
   const paint = useCallback((xs: number[]) => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");

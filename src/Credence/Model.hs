@@ -102,7 +102,7 @@ increment.
 @observe w@ multiplies the execution's likelihood by @exp w@, equivalently adds
 @w@ to its log-weight. The increment is a plain 'Double' computed by the caller,
 typically from a distribution's 'logDensityDist' at an observed datum, which
-keeps 'observe' agnostic to where the likelihood comes from (the spec).
+keeps 'observe' agnostic to where the likelihood comes from.
 -}
 observe :: Double -> Model ()
 observe w = Observe w (Pure ())

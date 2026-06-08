@@ -12,8 +12,8 @@ scalar observation log-likelihood) and the planted truth the recovery oracle jud
 the filter against.
 
 The target is a one-dimensional random walk observed with Normal noise, the
-canonical filtering problem and the same linear-Gaussian shape the Kalman oracle in
-05-01 already validated the filter on, now read as a moving target the cloud should
+canonical filtering problem and the same linear-Gaussian shape the Kalman oracle
+already validated the filter on, now read as a moving target the cloud should
 follow: the hidden state @x_t@ drifts by @x_t ~ Normal(x_{t-1}, q)@ and each step is
 seen as @y_t ~ Normal(x_t, r)@. A random walk (rather than a constant-velocity
 model) keeps the state a single 'Double', which drops straight into the filter's
@@ -24,8 +24,8 @@ The correctness oracle is a planted-trajectory recovery test, the particle-filte
 analogue of the localization gate: a known trajectory is generated under a fixed
 seed, the matching noisy observations are fed to the filter, and the filter's
 per-step filtering mean must track the true state within a documented tolerance (the
-estimate follows the target). This is the model gate the CONTEXT and the
-correctness discipline ask of the tracking demo, on top of the Kalman
+estimate follows the target). This is the model-level gate the
+tracking demo must clear for correctness, on top of the Kalman
 known-answer gate the filter itself already passes. The planted trajectory is the
 oracle; no closed form stands in for it.
 

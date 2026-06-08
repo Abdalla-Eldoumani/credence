@@ -5,11 +5,11 @@ import { easeSettlePoints } from "@/lib/tokens";
 // CLIENT clock (requestAnimationFrame), eases the rendered slopes toward each
 // new posterior sample with the --ease-settle curve so the band CONTRACTS
 // smoothly onto the trend, and draws AT MOST a bounded number of lines per
-// frame so a large sample count never stalls the main thread (edge case
-// streaming volume, a hardening note). Token colors come from getComputedStyle on
+// frame so a large sample count never stalls the main thread (to bound
+// streaming volume). Token colors come from getComputedStyle on
 // the CSS variables, never a hardcoded hex.
 
-// The posterior interpolation window from design system (180ms to 240ms); the
+// The posterior interpolation window from the design tokens (180ms to 240ms); the
 // midpoint, matching the histogram tween in lib/clock.ts so both morphs read as
 // the same motion.
 const DURATION_MS = 210;
@@ -68,8 +68,8 @@ const easeSettle = (x: number): number => bezier(E1X, E1Y, E2X, E2Y, x);
 
 // Read a CSS variable as a concrete color string the Canvas can use for
 // fillStyle/strokeStyle. Canvas cannot resolve var(--x) itself, so the value is
-// pulled from the computed style of a live element (design system: resolve tokens
-// via getComputedStyle, never hardcode hex). A blank result (SSR or detached node)
+// pulled from the computed style of a live element (the design system resolves
+// tokens via getComputedStyle, never hardcode hex). A blank result (SSR or detached node)
 // falls back to transparent so a missing token degrades to no-paint, not a crash.
 export function resolveCssVar(element: Element, name: string): string {
   const value = getComputedStyle(element).getPropertyValue(name).trim();

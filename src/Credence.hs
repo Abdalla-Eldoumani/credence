@@ -1,5 +1,5 @@
 {- | The public surface of the credence library. This module is intentionally
-small at the start. As stage 1 lands, re-export the model monad, the
+small at the start. As the library grows, re-export the model monad, the
 distribution library, the observe primitive, and the importance sampler from
 their respective modules under Credence.* so that callers import only this
 one module. Keep the export list and credence.cabal exposed-modules in sync.

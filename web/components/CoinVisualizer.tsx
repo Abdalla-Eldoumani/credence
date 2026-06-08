@@ -209,7 +209,7 @@ export function CoinVisualizer({ method, flips, priorA, priorB, runToken }: Coin
         },
         onReconnecting: () => {
           if (cancelled) return;
-          // Preserve the current bars; just flag the state (edge case SSE drop).
+          // Preserve the current bars; just flag the state across an SSE drop.
           setState("reconnecting");
         },
         onError: (error) => {

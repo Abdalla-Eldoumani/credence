@@ -6,7 +6,7 @@ type LivePanelProps = {
   title: string;
   subtitle: string;
   // The model-specific controls (method choice, start/restart, data editor).
-  // The coin route supplies coin controls; 03-03's regression route supplies its
+  // The coin route supplies coin controls; the regression route supplies its
   // own, so the two-column shell stays shared.
   controls: ReactNode;
   // The visualizer mounts in the right column.

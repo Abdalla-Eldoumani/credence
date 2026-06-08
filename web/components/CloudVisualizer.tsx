@@ -27,7 +27,7 @@ const MARGIN = { top: 16, right: 16, bottom: 32, left: 40 };
 const PLOT_W = VIEW_W - MARGIN.left - MARGIN.right;
 const PLOT_H = VIEW_H - MARGIN.top - MARGIN.bottom;
 
-// Particle radius (design system: 2px to 3px).
+// Particle radius (design tokens: 2px to 3px).
 const PARTICLE_RADIUS = 2.5;
 
 // The vertical band the particles jitter across, centered in the plot, so a dense
@@ -38,17 +38,17 @@ const JITTER_BOTTOM = MARGIN.top + PLOT_H * 0.8;
 
 // The per-frame work cap: the most particles drawn in one frame. The cloud is a
 // density, so a few hundred dots already read as the full spread; capping the count
-// keeps every frame bounded however many draws a batch carries (a hardening note).
+// keeps every frame bounded however many draws a batch carries.
 const MAX_PARTICLES = 300;
 
-// The opacity-by-weight range from design system: 0.25 at low weight to 0.9 at high.
+// The opacity-by-weight range from the design tokens: 0.25 at low weight to 0.9 at high.
 const ALPHA_LOW = 0.25;
 const ALPHA_HIGH = 0.9;
 // The uniform mid alpha used when there are no weights (MH), so the MH cloud still
 // reads as a density without a per-particle weight to scale by.
 const ALPHA_UNIFORM = 0.55;
 
-// The posterior interpolation window from design system (180ms to 240ms); the
+// The posterior interpolation window from the design tokens (180ms to 240ms); the
 // midpoint, matching the band and histogram tweens so every morph reads the same.
 const DURATION_MS = 210;
 
@@ -67,7 +67,7 @@ type CloudVisualizerProps = {
   // Bumped by the controls to (re)start a run. 0 means no run requested yet.
   runToken: number;
   // Optional taps on the single stream subscription so siblings (the traceplot,
-  // diagnostics, and 04-03's race) can mount without opening a second EventSource.
+  // diagnostics, and the race) can mount without opening a second EventSource.
   onRunStart?: () => void;
   onBatchDraws?: (draws: number[]) => void;
   onSummary?: (summary: Summary) => void;
