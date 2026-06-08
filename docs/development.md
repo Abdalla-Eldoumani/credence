@@ -73,6 +73,7 @@ cd web
 npm ci
 npm run dev          # http://localhost:3000
 npm run typecheck
+npm test             # the diagnostics-helper oracle, Node's built-in runner
 npm run lint
 npm run build
 ```
@@ -83,6 +84,22 @@ npm run build
 Styling is bespoke editorial CSS with CSS variables and CSS Modules. There is no
 Tailwind. The histograms and traceplots are SVG; the regression bands and
 particle clouds are Canvas.
+
+## Deployment
+
+The two halves deploy separately, because the engine is a native binary that does
+not run on a serverless platform.
+
+- **Front end (Vercel).** Set the project's root directory to `web`; Vercel then
+  auto-detects Next.js and applies `web/vercel.json` (security and long-cache
+  headers). Set `NEXT_PUBLIC_ENGINE_URL` to the engine's public URL before the
+  build: it is inlined at build time, and it must be `https://`, since a browser
+  blocks an `http://` engine call from an HTTPS page as mixed content. Unset, it
+  defaults to `http://127.0.0.1:3001` for local development. Every route prerenders
+  statically and renders without the engine, so the site is valid before an engine
+  is reachable; the live demos light up once the URL is set.
+- **Engine (any host that runs a Linux binary).** Build `credence-server`, run it
+  behind a TLS-terminating reverse proxy, and point `NEXT_PUBLIC_ENGINE_URL` at it.
 
 ## The test suite
 
@@ -127,7 +144,7 @@ Three rules hold throughout:
    meaningless.
 
 The front end has its own lightweight checks for the diagnostics helpers, run
-with the standard Node test runner via `npm run` scripts.
+with Node's built-in test runner via `npm test`.
 
 ## Formatters and linters
 
