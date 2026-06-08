@@ -45,18 +45,18 @@ break down.
 
 ## Setup
 
-Haskell runs inside WSL (Ubuntu). Keep the repo on the Linux filesystem under
-`~/projects`, not under `/mnt/c`, so file watching is fast. Install GHC and cabal
-with ghcup. Full steps are in `the setup notes`.
+The engine runs on GHC 9.6.7 with cabal 3.14.2.0, both installed through ghcup.
+On Windows, run it inside WSL (Ubuntu); for fast file watching keep the repo on
+the Linux filesystem under `~/projects` rather than under `/mnt/c`.
 
-    # inside WSL, from the repo root
+    # from the repo root
     cabal build all
     cabal freeze        # once, to lock the resolved plan
     cabal test
     cabal run credence-server   # serves on 127.0.0.1:3001
 
-The front end runs on Node 24. WSL2 forwards localhost to Windows, so the dev
-server is reachable from a host browser.
+The front end runs on Node 24. Under WSL, localhost forwards to Windows, so the
+dev server is reachable from a host browser.
 
     cd web
     npm ci
@@ -70,6 +70,22 @@ closed-form answers (Beta-Bernoulli, Normal-Normal) within documented tolerances
 under fixed seeds, and runs on Linux in CI.
 
     cabal test
+
+## Documentation
+
+The `docs/` directory explains how the system works and why it is built the way it
+is.
+
+- [docs/README.md](docs/README.md) - overview and index.
+- [docs/architecture.md](docs/architecture.md) - the model monad, the interpreter
+  design, the distribution library, the trace, the streaming boundary, and the
+  front end.
+- [docs/inference.md](docs/inference.md) - how each inference method works and the
+  correctness discipline that proves it against exact answers.
+- [docs/development.md](docs/development.md) - setup, build and test commands, and
+  the formatters.
+- [docs/security.md](docs/security.md) - the local-demo security posture.
+- [docs/demos.md](docs/demos.md) - the six gallery demos and what each shows.
 
 ## License
 
