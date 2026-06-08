@@ -16,12 +16,15 @@ import Credence.Inference.Importance (
     importanceSamples,
     normalizedLogWeights,
     posteriorMean,
+    posteriorMeanVariance,
  )
 import Credence.Inference.MH (mhChain)
 import Credence.Inference.SMC (
+    CloudStep (..),
     FilterStep (..),
     StateSpace (..),
     effectiveSampleSize,
+    particleCloud,
     particleFilter,
     systematicResample,
  )
@@ -39,11 +42,16 @@ import Credence.Trace (traceAddresses, traceModel)
 import Credence.Wire (
     Batch (..),
     Dataset (..),
+    DatasetKind (..),
     Method (..),
+    RequestError (..),
     RunRequest (..),
     RunStarted (..),
     StreamEvent (..),
     Summary (..),
+    maxDatasetLength,
+    maxSamples,
+    validateRunRequest,
  )
 import Data.Aeson (decode, encode)
 import Data.List (sort)
@@ -64,13 +72,12 @@ import Test.Tasty.HUnit (assertBool, testCase)
 main :: IO ()
 main = defaultMain tests
 
--- The stage 1 gate is conjugate-analytic agreement: importance sampling on
+-- The conjugate-agreement gate is conjugate-analytic agreement: importance sampling on
 -- the coin model versus the closed-form Beta posterior (conjugateTests). Under it
 -- sit the foundations: the log-space helper, every distribution's log-density
 -- against the independent statistics oracle, every distribution's sampler tied to
 -- that parameterization by moment matching, the model monad's laws, and the
--- importance sampler's normalization and unbiasedness. See
--- the correctness checks for the doctrine. A wrong sampler looks
+-- importance sampler's normalization and unbiasedness. A wrong sampler looks
 -- plausible, so these checks, not the eye, are what prove correctness.
 tests :: TestTree
 tests =
@@ -93,6 +100,9 @@ tests =
         , trackingRecoveryTests
         , mixtureRecoveryTests
         , wireTests
+        , requestValidationTests
+        , posteriorMomentTests
+        , trackingTotalityTests
         ]
 
 {- | A structural interpreter over Sample-free models (only Pure and Observe).
@@ -244,7 +254,7 @@ densityTests =
             -- logSumExp over the log-weights, the same log-space path the
             -- implementation takes; a linear log (VU.sum ws) reference would agree
             -- here but could not catch an underflow bug in that path, which is the
-            -- failure mode the correctness discipline flags for categoricals.
+            -- failure mode the correctness doctrine flags for categoricals.
             let ws = VU.fromList [1, 3, 6 :: Double]
                 i = 1
                 ref = log (ws VU.! i) - logSumExp (VU.map log ws)
@@ -269,7 +279,7 @@ assertNegInfinity name x =
 
 {- | Out-of-domain inputs score @-Infinity@, never @NaN@.
 
-Each continuous density has an open support, and the correctness discipline
+Each continuous density has an open support, and the correctness doctrine
 is explicit that a guard returning @-Infinity@ must have a test pinning it,
 because the failure it prevents (a @NaN@ from @0 * log 0@ at a boundary, or a
 panic from an out-of-range categorical index reached through @observe@) is
@@ -425,7 +435,7 @@ estimate of a known integral.
 
 These are the pieces the conjugate gate rests on, checked in isolation. The
 normalization cases pin down 'normalizedLogWeights' and 'posteriorMean' as pure
-functions. The unbiased case is the correctness discipline's second oracle
+functions. The unbiased case is the correctness doctrine's second oracle
 (unbiased estimation of a known integral): a model that only samples, with no
 observe, has every log-weight zero, so the weighted mean is an ordinary average
 and must converge to the prior mean it draws from. That isolates the
@@ -480,7 +490,7 @@ importanceTests =
                 (abs (est - target) < tol)
         ]
 
-{- | THE stage 1 gate: conjugate-analytic agreement on the coin model.
+{- | THE conjugate-agreement gate: conjugate-analytic agreement on the coin model.
 
 This is the single most important test in the project. A wrong sampler returns a
 smooth, plausible posterior, so the only proof that importance sampling is correct
@@ -490,8 +500,8 @@ posterior exactly Beta(a + h, b + t). The gate runs importance sampling on
 @coinModel a b flips@ under a fixed ST seed and asserts the weighted posterior
 matches the analytic Beta(a + h, b + t) in BOTH mean and variance. Mean alone is
 not enough: a sampler can hit the mean while getting the spread wrong, so the
-variance is checked too. Per the correctness discipline, stage 2 does not
-begin until this holds.
+variance is checked too. Per the correctness doctrine, the trace-based
+methods do not begin until this holds.
 
 The analytic moments are computed from the formulas (mean @(a+h)/(a+b+h+t)@,
 variance @a'b'/((a'+b')^2 (a'+b'+1))@) and independently cross-checked against
@@ -500,7 +510,7 @@ variance @a'b'/((a'+b')^2 (a'+b'+1))@) and independently cross-checked against
 conjugateTests :: TestTree
 conjugateTests =
     testGroup
-        "conjugate-analytic agreement (the stage 1 gate)"
+        "conjugate-analytic agreement (the conjugate-agreement gate)"
         [ testCase "coin model importance posterior matches Beta(a+h, b+t) in mean and variance" $ do
             let
                 -- Prior Beta(2,2) and a fixed flip sequence: 7 heads, 3 tails.
@@ -594,7 +604,7 @@ mhTraceTests =
 
 {- | Detailed balance: the MH chain converges to a known stationary distribution.
 
-This is the oracle the correctness discipline mandates for MH and the check
+This is the oracle the correctness doctrine mandates for MH and the check
 that the acceptance ratio and the addressing are right. A wrong ratio yields a
 smooth, plausible, WRONG stationary distribution, so the proof is a small target
 whose stationary distribution is known in closed form, against which the chain's
@@ -683,13 +693,13 @@ mhDetailedBalanceTests =
 {- | THE MH conjugate gate: the chain matches the analytic Beta posterior.
 
 The second oracle for MH, alongside detailed balance, and the exact analogue of
-the stage 1 importance-sampling gate: on the coin model, whose posterior is
+the importance-sampling conjugate gate: on the coin model, whose posterior is
 the closed-form Beta(a+h, b+t), the MH chain's empirical mean and variance must
 match that posterior. Mean alone is not enough (a chain can hit the mean while
 getting the spread wrong), so variance is checked too, and the analytic moments
 are independently cross-checked against @statistics@' @betaDistr@ so a typo in
 either path is caught. Passing this together with detailed balance closes the
-first half of the stage 2 gate.
+first half of the MH gate.
 
 Unlike the importance sample, MH draws are autocorrelated, so the effective sample
 size is well below the chain length and the windows are looser than the
@@ -715,7 +725,7 @@ mhConjugateTests =
                 -- Analytic posterior moments by the closed-form Beta formulas.
                 analyticMean = a' / (a' + b')
                 analyticVar = (a' * b') / ((a' + b') * (a' + b') * (a' + b' + 1))
-                -- Independent cross-check via statistics, same defense as stage 1.
+                -- Independent cross-check via statistics, same defense as the importance gate.
                 refDist = betaDistr a' b'
                 -- The MH chain on the coin model under a FIXED ST seed.
                 n = 200000
@@ -807,7 +817,7 @@ regPosterior = (muN, varN)
 {- | THE Normal-Normal gate: the regression posterior matches its closed-form
 Normal posterior in mean and variance.
 
-The second conjugate oracle the correctness discipline mandates, independent
+The second conjugate oracle the correctness doctrine mandates, independent
 of the Beta gate and on a structurally different model: a continuous latent with
 many observations rather than one Beta draw. The fixture is conjugate
 Normal-Normal with known noise ('regPoints'), so the posterior on the slope is an
@@ -1210,15 +1220,15 @@ kalmanModel =
 {- | THE particle-filter gate: the three correctness sanity oracles.
 
 A particle filter that quietly biases the distribution is the same failure mode as a
-biased sampler (the correctness discipline), so it gets the same known-answer
+biased sampler, so it gets the same known-answer
 treatment. Three oracles, each under a FIXED ST seed:
 
 1. Effective sample size behaves as expected: it drops as weights concentrate and
    resets toward N after a resample.
 2. Resampling is unbiased: it does not shift the empirical mean.
 3. Known-answer recovery: on a linear-Gaussian model the per-step filtering mean and
-   variance match the analytic Kalman filter, the strongest oracle the CONTEXT and
-   the discipline call for.
+   variance match the analytic Kalman filter, the strongest oracle the
+   correctness doctrine calls for.
 -}
 smcSanityTests :: TestTree
 smcSanityTests =
@@ -1371,7 +1381,7 @@ trackFilterSeed :: VU.Vector Word32
 trackFilterSeed = VU.fromList [0x7466, 0x696c, 0x7465, 0x7273]
 
 {- | THE tracking gate: the particle filter's estimate follows the moving target
-under a fixed seed (the spec's programmatic gate).
+under a fixed seed (the programmatic gate for the tracking demo).
 
 The model-level oracle for the tracking demo, the particle-filter analogue of the
 localization recovery test: no closed form is assumed, the planted trajectory is the
@@ -1389,8 +1399,8 @@ hidden states the filter never sees directly:
    end of the run, not merely close on average while lagging.
 
 This is the third correctness treatment of the SMC (after the ESS and
-unbiased-resampling oracles and the Kalman known-answer gate from 05-01), now at the
-model level the CONTEXT asks of the tracking demo: the estimate follows the target.
+unbiased-resampling oracles and the Kalman known-answer gate), now at the
+model level for the tracking demo: the estimate follows the target.
 
 Tolerances, in the standard-error discipline of the localization gate. The steady-
 state filtering posterior for a random walk with @q = trackQ = 0.6@ and
@@ -1403,7 +1413,7 @@ state is itself about that posterior sd, so a mean absolute tracking error aroun
 posterior sd and well above the per-step estimator noise at @count = 100000@): a
 filter that tracks clears it essentially always, while a filter that ignored the
 observation weight or never resampled would drift away from the walk and blow past
-it (the 05-01 teeth check showed a weight-dropping filter misses the Kalman track by
+it (the teeth check showed a weight-dropping filter misses the Kalman track by
 ~9x its tolerance, the same failure this would catch). The final-state window is the
 looser @2.0@ (about 2.6 posterior sd), since a single step is noisier than the run
 average; it still pins the filter to the end of the walk rather than letting it sit
@@ -1412,7 +1422,7 @@ near the prior.
 trackingRecoveryTests :: TestTree
 trackingRecoveryTests =
     testGroup
-        "tracking planted-trajectory recovery (the tracking gate, the spec)"
+        "tracking planted-trajectory recovery (the tracking gate)"
         [ testCase "the filter estimate follows the moving target under a fixed seed" $ do
             let
                 -- A planted random-walk trajectory of moderate length, and the noisy
@@ -1497,7 +1507,7 @@ mixturePoints =
         ++ [4.6, 5.4, 4.7, 5.3, 5.0]
 
 {- | THE mixture gate: planted-cluster recovery under a fixed seed, with label
-switching handled (the spec, correctness oracle 4).
+switching handled (correctness oracle 4).
 
 The model-level oracle for the Gaussian mixture: no closed form, the planted cluster
 means are the oracle. Well-separated clusters are planted ('plantedMeans'), synthetic
@@ -1524,7 +1534,7 @@ EXCHANGEABLE: each coordinate's marginal posterior is the SAME mixture over all
 clusters, and a per-coordinate posterior mean averages the clusters together (it
 comes out near the grand mean, recovering none of them; measured directly, the
 unsorted per-coordinate means are all near @(-6 + 0 + 5)/3 ~ -0.33@). The
-canonicalization the correctness discipline prescribes is to impose an
+canonicalization the correctness doctrine prescribes is to impose an
 identifiability constraint by ordering: SORT each particle's mean vector, then take
 the posterior mean of each sorted coordinate, so the j-th sorted coordinate's
 posterior mean lands on the j-th planted mean. The projection @\\ms -> sort ms !! j@
@@ -1546,7 +1556,7 @@ prior mean 0, misses the outer clusters by 5 to 6 units, far past it.
 mixtureRecoveryTests :: TestTree
 mixtureRecoveryTests =
     testGroup
-        "gaussian mixture planted-cluster recovery (the mixture gate, the spec)"
+        "gaussian mixture planted-cluster recovery (the mixture gate)"
         [ testCase "importance posterior recovers the planted cluster means, sorted (label switching)" $ do
             let
                 k = length plantedMeans
@@ -1726,3 +1736,228 @@ wireTests =
         assertBool
             (name <> ": decode (encode started) /= Just started; got " <> show (decode (encode started) :: Maybe RunStarted))
             (decode (encode started) == Just started)
+
+{- | The pure request validator bounds an untrusted run request before any work.
+
+'Credence.Wire.validateRunRequest' is the server's first line of defense against a
+client (or a bug in one) that asks the loopback engine to do unbounded work: it
+rejects an over-budget @samples@, an over-long dataset, a non-positive @samples@, a
+dataset that does not match the route, and an empty tracking sequence, and returns
+the normalized dataset only when every bound holds. Because it is pure it is checked
+here directly, without a running server, the same way the wire round-trip is. These
+are exact-outcome checks (a specific 'RequestError' or a 'Right' dataset), not
+tolerances: validation is not statistical.
+
+The over-limit cases probe just past each boundary (@maxSamples + 1@, a dataset of
+@maxDatasetLength + 1@ elements) so a check that used @>=@ where it meant @>@, or the
+wrong constant, would be caught. The accept case is a realistic in-bounds request, so
+a validator that rejected everything would fail it. The mismatch case drives the coin
+route with regression points, the exact confusion the route guard exists to stop.
+-}
+requestValidationTests :: TestTree
+requestValidationTests =
+    testGroup
+        "request validation (pure bounds on an untrusted run request)"
+        [ testCase "a valid in-bounds request is accepted and returns its dataset" $ do
+            -- A coin request well inside every bound: positive samples below the cap
+            -- and a short flip sequence. The validator must return the dataset intact.
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Coin{datasetFlips = [True, False, True]}
+                        , runRequestSamples = 2000
+                        }
+            assertBool
+                ("valid coin request accepted: " <> show (validateRunRequest CoinKind req))
+                (validateRunRequest CoinKind req == Right Coin{datasetFlips = [True, False, True]})
+        , testCase "samples just over the maximum is rejected as SamplesTooLarge" $ do
+            -- One past the cap is the boundary: maxSamples itself is allowed, maxSamples
+            -- + 1 is not, so a >= / > slip in the bound would be caught here.
+            let n = maxSamples + 1
+                req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Coin{datasetFlips = [True]}
+                        , runRequestSamples = n
+                        }
+            assertBool
+                ("over-cap samples rejected: " <> show (validateRunRequest CoinKind req))
+                (validateRunRequest CoinKind req == Left (SamplesTooLarge n))
+        , testCase "samples exactly at the maximum is accepted" $ do
+            -- The cap is inclusive: maxSamples is a legal budget, so the boundary value
+            -- itself must pass. This is the other half of the off-by-one guard above.
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Coin{datasetFlips = [True]}
+                        , runRequestSamples = maxSamples
+                        }
+            assertBool
+                ("at-cap samples accepted: " <> show (validateRunRequest CoinKind req))
+                (validateRunRequest CoinKind req == Right Coin{datasetFlips = [True]})
+        , testCase "a dataset longer than the maximum is rejected as DatasetTooLong" $ do
+            -- A regression dataset one past the length cap. The points are dummy but
+            -- the COUNT is what the validator bounds, so length maxDatasetLength + 1
+            -- must be refused and the reported length must be that count.
+            let len = maxDatasetLength + 1
+                pts = replicate len (1.0, 2.0)
+                req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Regression{datasetPoints = pts}
+                        , runRequestSamples = 1000
+                        }
+            assertBool
+                ("over-long dataset rejected: " <> show (validateRunRequest RegressionKind req))
+                (validateRunRequest RegressionKind req == Left (DatasetTooLong len))
+        , testCase "non-positive samples is rejected as NonPositiveSamples" $ do
+            -- Zero samples means a run that draws nothing, whose summaries are
+            -- undefined; it (and any negative) is refused before a worker starts.
+            let req =
+                    RunRequest
+                        { runRequestMethod = MH
+                        , runRequestDataset = Coin{datasetFlips = [True, False]}
+                        , runRequestSamples = 0
+                        }
+            assertBool
+                ("zero samples rejected: " <> show (validateRunRequest CoinKind req))
+                (validateRunRequest CoinKind req == Left (NonPositiveSamples 0))
+        , testCase "a dataset whose constructor does not match the route is rejected" $ do
+            -- Regression points sent to the coin route: the exact dataset/route
+            -- confusion the guard exists to stop. The error names both kinds.
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Regression{datasetPoints = [(1.0, 2.0)]}
+                        , runRequestSamples = 1000
+                        }
+            assertBool
+                ("dataset/route mismatch rejected: " <> show (validateRunRequest CoinKind req))
+                (validateRunRequest CoinKind req == Left (DatasetRouteMismatch CoinKind RegressionKind))
+        , testCase "an empty tracking observation sequence is rejected" $ do
+            -- The filter summarizes its last step, which does not exist for an empty
+            -- sequence, so an empty tracking dataset is refused at the boundary rather
+            -- than crashing the worker on V.last of an empty cloud.
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Tracking{datasetObservations = []}
+                        , runRequestSamples = 20000
+                        }
+            assertBool
+                ("empty tracking rejected: " <> show (validateRunRequest TrackingKind req))
+                (validateRunRequest TrackingKind req == Left EmptyTrackingObservations)
+        , testCase "a non-empty tracking sequence within bounds is accepted" $ do
+            -- The complement of the empty-tracking case: a short observation sequence
+            -- passes, so the rule rejects only the degenerate empty input.
+            let obs = [1.0, 1.2, 0.9]
+                req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Tracking{datasetObservations = obs}
+                        , runRequestSamples = 20000
+                        }
+            assertBool
+                ("non-empty tracking accepted: " <> show (validateRunRequest TrackingKind req))
+                (validateRunRequest TrackingKind req == Right Tracking{datasetObservations = obs})
+        ]
+
+{- | 'posteriorMeanVariance' agrees with two separate 'posteriorMean' calls.
+
+The server's importance path computes the posterior mean and variance from a single
+weight normalization via 'posteriorMeanVariance' rather than two 'posteriorMean'
+passes, to avoid normalizing the log-weights twice. The optimization is only sound if
+the fused result equals the unfused one, so this pins that: on a weighted sample with
+deliberately unequal log-weights (so the normalization actually matters), the fused
+mean equals @posteriorMean s id@ and the fused variance equals
+@posteriorMean s (^2) - (posteriorMean s id)^2@, to floating-point round-off. The
+weights are unequal on purpose; with equal weights a buggy normalization could still
+coincidentally agree, giving the check no teeth.
+
+These are exact-arithmetic agreements between two code paths over the same data, so
+the tolerance is a tight round-off window (1e-12), not a statistical one. The
+non-negativity assertion guards the variance clamp the fused helper applies.
+-}
+posteriorMomentTests :: TestTree
+posteriorMomentTests =
+    testGroup
+        "posteriorMeanVariance (fused moments agree with two posteriorMean passes)"
+        [ testCase "fused mean and variance match the separate posteriorMean computations" $ do
+            -- A weighted sample with unequal log-weights, so the normalization is
+            -- load-bearing and a wrong fused path would diverge from the separate one.
+            let samples =
+                    V.fromList
+                        [ (1.0, -0.5)
+                        , (2.0, 0.7)
+                        , (3.0, -1.2)
+                        , (4.0, 0.1)
+                        , (5.0, 1.3)
+                        ] ::
+                        V.Vector (Double, Double)
+                (fusedMean, fusedVar) = posteriorMeanVariance samples id
+                refMean = posteriorMean samples id
+                refSecond = posteriorMean samples (\x -> x * x)
+                refVar = refSecond - refMean * refMean
+            assertBool
+                ("fused mean " <> show fusedMean <> " matches separate " <> show refMean)
+                (abs (fusedMean - refMean) < 1e-12)
+            assertBool
+                ("fused variance " <> show fusedVar <> " matches separate " <> show refVar)
+                (abs (fusedVar - refVar) < 1e-12)
+            -- The fused variance is clamped at 0, so it is never negative even though
+            -- E[x^2] - E[x]^2 can round slightly below zero on a degenerate sample.
+            assertBool
+                ("fused variance is non-negative: " <> show fusedVar)
+                (fusedVar >= 0)
+        ]
+
+{- | A minimal tracking run is total: one observation yields exactly one cloud step.
+
+The request validator now rejects an EMPTY tracking sequence (covered above), so the
+smallest run the server will actually start is a single observation. This pins that
+that minimal run is total and well-formed: 'particleCloud' over one observation
+returns exactly one 'CloudStep', and that step carries a usable population (its state
+and weight vectors are non-empty and aligned). The server reads @V.last@ of this
+vector, so a one-step run producing one step is exactly what keeps that read from
+failing. Run under a FIXED ST seed so the check is reproducible.
+
+The assertions are structural (a length, two aligned non-empty vectors), not
+statistical, so they hold exactly rather than within a tolerance. This is the
+totality complement to the recovery gate: that gate proves a many-step filter tracks;
+this proves the shortest permitted run does not crash and yields a paintable cloud.
+-}
+trackingTotalityTests :: TestTree
+trackingTotalityTests =
+    testGroup
+        "tracking totality (the minimal permitted run is total)"
+        [ testCase "particleCloud over a single observation yields one aligned, non-empty step" $ do
+            let
+                count = 256 :: Int
+                threshold = 0.5 :: Double
+                -- The smallest non-empty observation sequence the validator permits.
+                observations = [1.0]
+                cloud = runST $ do
+                    g <- initialize fixedSeed
+                    particleCloud count threshold trackingModel observations g
+            -- One observation produces exactly one filtering step.
+            assertBool
+                ("one observation yields one cloud step, got " <> show (V.length cloud))
+                (V.length cloud == 1)
+            let step = V.head cloud
+                states = csStates step
+                weights = csWeights step
+            -- The single step's population is the full particle count, and its state
+            -- and weight vectors are aligned, so the server's V.last read finds a
+            -- well-formed, paintable cloud rather than an empty or ragged one.
+            assertBool
+                ("the step carries all " <> show count <> " particles, got " <> show (VU.length states))
+                (VU.length states == count)
+            assertBool
+                ("states and weights are aligned, got " <> show (VU.length states) <> " vs " <> show (VU.length weights))
+                (VU.length states == VU.length weights)
+            -- The normalized weights of a proper one-step run sum to 1 (no degeneracy
+            -- to NaN), the same invariant the importance normalization is held to.
+            assertBool
+                ("the step's normalized weights sum to 1: " <> show (VU.sum weights))
+                (abs (VU.sum weights - 1) < 1e-9)
+        ]

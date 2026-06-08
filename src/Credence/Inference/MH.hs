@@ -78,7 +78,7 @@ the structure-wide prior sums share every unperturbed address, so most of this
 cancels against the prior difference and the move reduces to a likelihood ratio;
 but that reduction is DERIVED here by computing the full expression, not assumed.
 A model with @|x| /= |x'|@ would still be scored correctly by the same code,
-though MH is scoped to fixed-structure models (the engine notes).
+though MH is scoped to fixed-structure models.
 
 Everything is in log-space: the log-ratio is compared against @log u@, and no raw
 log-weight is ever exponentiated.

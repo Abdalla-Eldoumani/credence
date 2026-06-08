@@ -24,7 +24,7 @@
 }
 
 /* The reconnecting pulse: a calm accent breath on the figure border, the single
-   accent hue signalling state (no second status color), per design system. */
+   accent hue signalling state (no second status color), per the design system. */
 .reconnecting {
   animation: pulse 1.4s var(--ease-settle) infinite;
 }

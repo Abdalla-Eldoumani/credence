@@ -17,7 +17,7 @@ posterior collapses or goes to NaN. So weights are combined through
 'Credence.logSumExp', never by exponentiating individual log-weights and adding.
 The normalization subtracts the log-sum-exp inside the exponent, which keeps the
 largest weight at @exp 0 = 1@ and every other a well-scaled fraction. This is the
-numerics the correctness discipline insists on, and the conjugate-agreement
+numerics correctness demands, and the conjugate-agreement
 gate is what proves the result is the true posterior and not a plausible wrong
 one.
 
@@ -29,6 +29,7 @@ module Credence.Inference.Importance (
     importanceSamples,
     normalizedLogWeights,
     posteriorMean,
+    posteriorMeanVariance,
 ) where
 
 import Control.Monad (replicateM)
@@ -75,8 +76,8 @@ importanceSamples n model gen = V.fromList <$> replicateM n (runParticle model g
 Returns @exp (w_i - logSumExp ws)@ for each weight, which is the self-normalized
 importance weight. The subtraction happens inside the exponent, so the maximum
 weight maps to @exp 0 = 1@ and the rest to fractions of it; no individual
-log-weight is exponentiated before being summed, which is the underflow trap the
-correctness discipline calls out. The normalizer 'logSumExp' is the stable
+log-weight is exponentiated before being summed, which is the underflow trap
+log-space exists to avoid. The normalizer 'logSumExp' is the stable
 log-sum-exp from "Credence". The result sums to @1@ up to floating-point
 round-off. An empty input gives an empty result (there is nothing to normalize).
 -}
@@ -108,3 +109,29 @@ posteriorMean samples f =
     weights = normalizedLogWeights (VU.convert (V.map snd samples))
     -- The projection evaluated at each sampled value, aligned with the weights.
     values = VU.convert (V.map (f . fst) samples)
+
+{- | The posterior mean and variance of a projection from a SINGLE normalization.
+
+Returns @(E[f], Var[f])@ under the self-normalized importance weights, with the
+variance by the @E[f^2] - E[f]^2@ identity and clamped at @0@ so second-moment
+round-off cannot produce a small negative. The point of this over two
+'posteriorMean' calls is that it normalizes the log-weights once and reuses them for
+both moments: the mean and second moment are weighted sums against the same weight
+vector, so computing the (relatively expensive) log-sum-exp normalization twice is
+pure waste. The result is numerically identical to @(posteriorMean s f, posteriorMean
+s (\\x -> f x * f x) - posteriorMean s f ^ 2)@ up to the variance clamp, which the
+test suite pins. An empty sample yields @(0, 0)@ by the empty-sum convention, the
+same boundary 'posteriorMean' has and which the callers never hit.
+-}
+posteriorMeanVariance :: V.Vector (a, Double) -> (a -> Double) -> (Double, Double)
+posteriorMeanVariance samples f = (mean, variance)
+  where
+    -- One normalization, shared by both moments below.
+    weights = normalizedLogWeights (VU.convert (V.map snd samples))
+    values = VU.convert (V.map (f . fst) samples)
+    mean = VU.sum (VU.zipWith (*) weights values)
+    second = VU.sum (VU.zipWith (\w x -> w * x * x) weights values)
+    -- Clamp at 0: E[f^2] - E[f]^2 is non-negative in exact arithmetic, but
+    -- floating-point round-off on a near-degenerate sample can make it slightly
+    -- negative, which would be a nonsense variance.
+    variance = max 0 (second - mean * mean)

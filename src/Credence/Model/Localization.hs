@@ -18,13 +18,13 @@ make the posterior bimodal, which is not what the cloud is meant to show). The
 prior is a broad @Normal(mu0, sigma0)@ on the location.
 
 The correctness oracle is a planted-source recovery test, not a closed form. The
-posterior here is in fact conjugate Normal-Normal, but per the correctness
-discipline the model is proven by planting a known @theta@ and asserting the importance
+posterior here is in fact conjugate Normal-Normal, but the model is still proven by
+planting a known @theta@ and asserting the importance
 posterior recovers it: the posterior mean lands within a tolerance derived from the
 estimator's standard error of the planted value, AND the posterior spread shrinks
 as readings accumulate (the concentration the cloud renders). The planted answer is
-the oracle; no fabricated formula stands in for it. See the correctness
-discipline for why a recovery check, not the eye, is the proof.
+the oracle; no fabricated formula stands in for it. A recovery check, not the eye,
+is the proof.
 
 Building the model performs no sampling and no IO. It allocates the same inert
 instruction tree any model is: the 'sample' draws nothing until an interpreter

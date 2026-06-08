@@ -1,7 +1,7 @@
 /*
-  Design tokens for credence. These mirror the design notes exactly.
-  Named fonts (Fraunces, Inter, IBM Plex Mono) are wired with next/font in the
-  typography stage; until then the stacks fall back to system fonts so the
+  Design tokens for credence.
+  Named fonts (Fraunces, Inter, IBM Plex Mono) are wired with next/font once the
+  typography work lands; until then the stacks fall back to system fonts so the
   shell builds and renders without a font dependency.
 */
 

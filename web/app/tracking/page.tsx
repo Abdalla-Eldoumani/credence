@@ -12,8 +12,8 @@ import styles from "./tracking.module.css";
 // axis the way the server's random-walk target does. The exact planted trajectory the
 // recovery test judges the filter on is generated server-side under a fixed seed and
 // never crosses the wire, so this is a believable stand-in the visualizer marks the
-// latest read of; the "sample" affordance loads it in one click (edge case first
-// launch). It stays inside the cloud's +/-10 window so the target never clips an edge.
+// latest read of; the "sample" affordance loads it in one click for the first-launch
+// empty state. It stays inside the cloud's +/-10 window so the target never clips an edge.
 const SAMPLE_OBSERVATIONS = [
   0.2, -0.6, 0.1, 1.0, 1.9, 2.6, 3.4, 2.9, 3.8, 4.6, 5.1, 4.7, 5.6, 4.9, 4.1, 3.3, 2.6, 1.8, 1.1,
   0.3, -0.5, -1.4, -2.2, -3.1, -3.8, -4.5, -5.2, -4.7, -3.9, -3.0, -2.2, -1.3, -0.5, 0.4, 1.2, 2.1,

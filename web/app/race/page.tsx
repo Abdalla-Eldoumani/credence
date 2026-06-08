@@ -6,7 +6,7 @@ import { MethodRace } from "@/components/MethodRace";
 import styles from "./race.module.css";
 
 // The race conditions both methods on the SAME problem from the SAME data, so the
-// comparison is honest (the spec). The planted source and a default reading set
+// comparison is honest. The planted source and a default reading set
 // clustered near it are the same symmetric, zero-deviation-sum set the localization
 // demo plants, so both clouds' marks sit exactly on the readings' mean.
 const TRUE_SOURCE = 3.0;

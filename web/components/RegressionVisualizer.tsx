@@ -29,7 +29,7 @@ const MARGIN = { top: 16, right: 16, bottom: 32, left: 40 };
 const PLOT_W = VIEW_W - MARGIN.left - MARGIN.right;
 const PLOT_H = VIEW_H - MARGIN.top - MARGIN.bottom;
 
-// Data point radius (design system: 3px to 4px) and the touch hit target (>=44px).
+// Data point radius (design tokens: 3px to 4px) and the touch hit target (>=44px).
 const POINT_RADIUS = 4;
 const HIT_RADIUS = 22;
 
@@ -46,7 +46,7 @@ const REQUESTED_SAMPLES = 20000;
 
 // A noisy linear dataset for the one-click first-launch affordance: points near
 // the line y = 1.6 x with small Gaussian-looking jitter, so a run pulls the band
-// onto a clear positive slope (edge case first launch).
+// onto a clear positive slope for the first-launch empty state.
 const SAMPLE_POINTS: [number, number][] = [
   [-5, -7.6],
   [-4, -6.9],
@@ -193,8 +193,8 @@ export function RegressionVisualizer({
     }
 
     // Ring the keyboard-active point in --focus-ring while the canvas is focused,
-    // so keyboard users see which point the arrow keys will move (design system:
-    // a visible focus state on every interactive element).
+    // so keyboard users see which point the arrow keys will move (the design system
+    // calls for a visible focus state on every interactive element).
     const active = activeIndexRef.current;
     if (focusedRef.current && active >= 0 && active < current.length) {
       const [ax, ay] = current[active];
@@ -343,7 +343,7 @@ export function RegressionVisualizer({
         },
         onReconnecting: () => {
           if (cancelled) return;
-          // Preserve the band; just flag the state (edge case SSE drop).
+          // Preserve the band; just flag the state across an SSE drop.
           setState("reconnecting");
         },
         onError: (error) => {

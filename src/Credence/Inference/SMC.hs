@@ -25,7 +25,7 @@ oracles rather than to the eye. Weights accumulate as log-likelihoods and are tu
 into a probability vector only through 'normalizedLogWeights' (reused from the
 importance interpreter, already tested), so no raw log-weight is ever exponentiated
 before being summed. A particle filter that quietly biases the distribution is the
-same failure mode as a biased sampler (the correctness discipline), so the
+same failure mode as a biased sampler, so the
 proof is three checks in "test/Spec.hs": effective sample size drops as weights
 concentrate and resets after a resample, resampling does not shift the empirical
 mean, and on a linear-Gaussian model the per-step filtering mean and variance match

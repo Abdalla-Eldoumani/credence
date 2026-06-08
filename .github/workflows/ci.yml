@@ -6,9 +6,8 @@ on:
   pull_request:
     branches: [main, master]
 
-# Statistical tests are made stable by fixed seeds inside the suite itself (see
-# the correctness discipline), not by environment configuration. CI runs on
-# Linux so the documented tolerances hold.
+# Statistical tests are made stable by fixed seeds inside the suite itself, not by
+# environment configuration. CI runs on Linux so the documented tolerances hold.
 
 jobs:
   engine:
@@ -48,10 +47,16 @@ jobs:
           cabal install hlint --overwrite-policy=always
           hlint .
 
+      # fourmolu is a formatter, not a build dependency, so it must not be tied to
+      # cabal.project's index-state (2025-05-02). That snapshot caps a cabal-installed
+      # fourmolu at 0.18.0.0, whose existential layout differs from the 0.19.0.1 the
+      # sources are formatted with. Pull the matching prebuilt binary instead.
       - name: fourmolu format check
         run: |
-          cabal install fourmolu --overwrite-policy=always
-          fourmolu --mode check $(git ls-files '*.hs')
+          curl -fsSL https://github.com/fourmolu/fourmolu/releases/download/v0.19.0.1/fourmolu-0.19.0.1-linux-x86_64 -o fourmolu-bin
+          chmod +x fourmolu-bin
+          ./fourmolu-bin --version
+          ./fourmolu-bin --mode check $(git ls-files '*.hs')
 
   web:
     name: web (next.js)

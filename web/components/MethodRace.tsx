@@ -9,7 +9,7 @@ import styles from "./MethodRace.module.css";
 
 // The two methods run side by side on the SAME problem from the SAME data. The
 // simultaneity is the whole point: a single raceToken is passed as the runToken to
-// BOTH columns, so one bump starts two CONCURRENT runs. The 04-01 server keys each
+// BOTH columns, so one bump starts two CONCURRENT runs. The server keys each
 // run by its own RunId (POST /run/localization returns a RunId, GET /stream/<id>
 // drains that one), so the two CloudVisualizers each open their own subscription and
 // both clouds animate at once. This is NOT importance-then-MH sequencing; both POST

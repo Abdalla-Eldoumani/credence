@@ -27,15 +27,15 @@ const MARGIN = { top: 16, right: 16, bottom: 32, left: 40 };
 const PLOT_W = VIEW_W - MARGIN.left - MARGIN.right;
 const PLOT_H = VIEW_H - MARGIN.top - MARGIN.bottom;
 
-// Data point radius (design system: 3px to 4px).
+// Data point radius (design tokens: 3px to 4px).
 const DATA_RADIUS = 3.5;
 
 // The per-frame work cap: the most data points drawn in one frame. The synthetic set
 // is small, but capping keeps the frame bounded however many points a dataset carries
-// (the same per-frame contract the cloud honors, a hardening note).
+// (the same per-frame contract the cloud honors).
 const MAX_DATA_POINTS = 300;
 
-// The posterior interpolation window from design system (180ms to 240ms); the
+// The posterior interpolation window from the design tokens (180ms to 240ms); the
 // midpoint, matching the other tweens so every morph reads the same.
 const DURATION_MS = 210;
 
@@ -164,7 +164,7 @@ export function MixtureVisualizer({
   // Paint one frame: clear, grid, the planted-cluster marks, the synthetic data, then
   // the recovered means at their eased x on top. Every color resolves through
   // getComputedStyle (resolveCssVar), so no hex is hardcoded; a missing token degrades
-  // to transparent, not a crash (a hardening note).
+  // to transparent, not a crash.
   const paint = useCallback((recovered: number[]) => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");

@@ -22,8 +22,8 @@ correctness oracle. With a Normal prior on the coefficient and a Normal
 likelihood whose standard deviation is fixed, the posterior on the coefficient is
 itself Normal with a closed form, so the agreement test in "test/Spec.hs" can
 check the sampled posterior against an exact answer in mean and variance rather
-than by eye. See the correctness discipline for why that closed-form check
-is the only honest proof a sampler works.
+than by eye. That closed-form check is the only honest proof a sampler works,
+since a wrong sampler still returns a smooth, plausible posterior.
 -}
 module Credence.Model.Regression (
     linearRegression,

@@ -1,7 +1,7 @@
 // Hand-checked correctness oracle for the diagnostics helpers, run with Node's
 // built-in test runner (node --test, no extra dependency). These pin the ESS and
 // acceptance-rate formulas to numbers computed by hand, so a wrong formula fails
-// here rather than rendering a smooth, plausible, wrong figure (a hardening note).
+// here rather than rendering a smooth, plausible, wrong figure.
 // Run from web/: node --test lib/diagnostics.test.ts
 
 import assert from "node:assert/strict";

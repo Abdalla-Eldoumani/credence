@@ -16,7 +16,7 @@ const PLANTED_CLUSTERS = [-6.0, 0.0, 5.0];
 // The synthetic data points, the same fifteen the recovery test plants: five tightly
 // around each planted cluster, each cluster's deviations summing to zero so the sample
 // mean is exactly the planted value. Loaded by the "sample" affordance in one click
-// (edge case first launch), and POSTed verbatim to /run/mixture so the server recovers
+// for the first-launch empty state, and POSTed verbatim to /run/mixture so the server recovers
 // these clusters.
 const SAMPLE_POINTS = [
   -6.5, -5.5, -6.3, -5.7, -6.0, -0.5, 0.5, -0.3, 0.3, 0.0, 4.6, 5.4, 4.7, 5.3, 5.0,

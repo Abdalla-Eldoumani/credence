@@ -18,7 +18,3 @@ web/next-env.d.ts
 # Editor and OS noise
 *.swp
 .DS_Store
-
-# Agent and planning files are NOT excluded here. They are excluded per-clone
-# through .git/info/exclude so the public repo carries no record of the tooling.
-# See the ignore template and the setup notes.

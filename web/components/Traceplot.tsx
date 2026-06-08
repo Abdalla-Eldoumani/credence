@@ -4,7 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import styles from "./Traceplot.module.css";
 
 // An SVG traceplot of the latent value over sample index. The load-bearing
-// contract (a hardening note) is the windowed buffer: only the most recent WINDOW
+// contract is the windowed buffer: only the most recent WINDOW
 // samples are kept, so the path's d-string is bounded however long the run, and
 // it is rebuilt only when new samples ARRIVE (a few times, paced by the stream),
 // never every animation frame. The per-frame work is a transform-only scroll (a
@@ -112,7 +112,7 @@ export const Traceplot = forwardRef<TraceplotHandle, TraceplotProps>(function Tr
   // The client-clock loop: ease the fractional scroll toward the integer scroll
   // position and translate the group by the remainder, so the window glides as
   // points drop off rather than stepping a whole sample. Decoupled from arrival
-  // (edge case slow network). Reduced motion snaps to the step.
+  // under a slow network. Reduced motion snaps to the step.
   useEffect(() => {
     const frame = () => {
       flush.current();

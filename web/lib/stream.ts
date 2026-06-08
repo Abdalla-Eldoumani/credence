@@ -45,7 +45,7 @@ export type StreamEvent =
 export type CoinDataset = { tag: "Coin"; flips: boolean[] };
 
 // The regression dataset: observed [x, y] points the slope is fit through. The
-// wire shape matches the 03-01 server (Regression{points:[[x,y]]}); the latent is
+// wire shape matches the server (Regression{points:[[x,y]]}); the latent is
 // the slope w, and the posterior band is the lines y = w_i * x for sampled w_i.
 export type RegressionDataset = { tag: "Regression"; points: [number, number][] };
 
@@ -93,7 +93,7 @@ export type StreamHandlers = {
   onDone?: () => void;
   // EventSource auto-reconnects; this fires when the connection drops and the
   // browser is retrying, so the UI can show the reconnecting indicator and keep
-  // the current bars (edge case SSE drop).
+  // the current bars across an SSE drop.
   onReconnecting?: () => void;
   // Fires when a message cannot be parsed, or on a terminal error.
   onError?: (error: unknown) => void;

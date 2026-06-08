@@ -24,7 +24,7 @@ built only from 'sample'/'observe' over the unchanged monad:
   mean from a broad Normal prior, then for each data point draw a cluster assignment
   from a 'Credence.Distribution.categoricalDist' over the mixing weights and 'observe'
   that point's Normal log-likelihood under the assigned cluster's mean. The per-point
-  assignment is the data-dependent random choice the CONTEXT calls for, and the one
+  assignment is a data-dependent random choice, the one
   the importance interpreter handles without addressing.
 
 * 'gaussianMixtureCollapsed' is the SAME model with the discrete assignment summed
@@ -42,8 +42,8 @@ built only from 'sample'/'observe' over the unchanged monad:
   server both run the collapsed form for this reason; see the note on the recovery test
   below.
 
-The correctness oracle is a planted-cluster recovery test (correctness
-oracle 4), not a closed form: well-separated clusters are planted, synthetic data is
+The correctness oracle is a planted-cluster recovery test (the fourth correctness
+oracle), not a closed form: well-separated clusters are planted, synthetic data is
 generated near them, importance sampling is run on 'gaussianMixtureCollapsed' under a
 fixed seed, and the posterior must recover the planted means within a documented
 tolerance. The mandatory subtlety is LABEL SWITCHING. The mixture posterior is
@@ -51,7 +51,7 @@ invariant to permuting the cluster labels (relabeling clusters leaves the likeli
 unchanged), so the @k@ mean-latents are EXCHANGEABLE: each coordinate's marginal
 posterior is the same mixture over all clusters, and a per-coordinate posterior mean
 would average the clusters together and recover none of them. The canonicalization
-the discipline prescribes is to impose an identifiability constraint by ordering: SORT the
+used here is to impose an identifiability constraint by ordering: SORT the
 mean vector WITHIN each particle, then take the posterior mean of each sorted
 coordinate, which lands the j-th sorted coordinate on the j-th planted mean. The test
 then compares those sorted recovered means to the sorted planted means; see

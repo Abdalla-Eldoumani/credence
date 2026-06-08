@@ -132,8 +132,8 @@ The weights need not sum to one; normalization happens in log-space.
 'MWC.categorical' samples an index in proportion to the weights, and the
 log-density of index @i@ is @log (weights ! i) - logSumExp (map log weights)@.
 Doing the normalization through 'logSumExp' rather than dividing by a raw sum
-keeps it stable and underflow-free, the failure mode the correctness
-discipline flags for categoricals specifically.
+keeps it stable and underflow-free, the failure mode categoricals are
+especially prone to.
 
 The caller must pass non-negative weights with at least one positive entry; this
 is the library's usual parameter precondition and is not guarded, the same way

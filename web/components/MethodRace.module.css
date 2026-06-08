@@ -2,7 +2,7 @@
    below its canvas's intrinsic width instead of forcing horizontal overflow, so the
    clouds, diagnostics, and traceplots all stay inside their column. Below 768px the
    grid drops to a single column and the two methods stack, mirroring the LivePanel
-   collapse (design system: two-column collapsing to one below 768px). */
+   collapse (the design system: two-column collapsing to one below 768px). */
 .race {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

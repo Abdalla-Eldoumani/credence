@@ -17,8 +17,8 @@ choice held fixed.
 
 Addressing is by execution-order position (the first 'Sample' is address 0, the
 next 1, and so on), assigned by a counter the interpreter increments at each
-'Sample'. For fixed-structure models -- the only models MH is scoped to, per
-the engine notes -- this is stable across runs: the same control flow visits the
+'Sample'. For fixed-structure models -- the only models MH is scoped to -- this
+is stable across runs: the same control flow visits the
 same 'Sample' nodes in the same order, so address n always names the same choice.
 Models whose control flow branches on a random outcome are out of scope here;
 importance sampling handles them and needs no addressing.

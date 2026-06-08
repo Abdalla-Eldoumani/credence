@@ -11,7 +11,7 @@ import styles from "./localization.module.css";
 // The planted source the demo conditions on, and a default reading set clustered
 // near it (the same symmetric, zero-deviation-sum set the recovery test plants, so
 // the cloud's mark sits exactly on the readings' mean). The "sample" affordance
-// loads this in one click (edge case first launch), and the cloud marks
+// loads this in one click for the first-launch empty state, and the cloud marks
 // TRUE_SOURCE so the eye watches the cloud collapse onto it.
 const TRUE_SOURCE = 3.0;
 const SAMPLE_READINGS = [3.6, 2.4, 3.2, 2.8, 3.5, 2.5, 3.7, 2.3, 3.1, 2.9, 3.4, 2.6];

@@ -21,7 +21,7 @@
   padding-bottom: var(--space-3);
   margin-bottom: var(--space-4);
   /* A hairline separator sets the heading off from the readouts, the only rule in
-     the panel (design system: 1px --border-subtle plus spacing, no shadows). */
+     the panel (design tokens: 1px --border-subtle plus spacing, no shadows). */
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -69,7 +69,7 @@
 }
 
 /* The not-converged note uses the single accent hue and weight, no second status
-   color (design system). A hairline above ties it into the panel rhythm. */
+   color (per the design system). A hairline above ties it into the panel rhythm. */
 .warning {
   padding-top: var(--space-4);
   margin-top: var(--space-4);

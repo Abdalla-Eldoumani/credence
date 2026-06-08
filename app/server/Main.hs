@@ -9,8 +9,8 @@ as @data:@ lines while it converges. Each run's inference loop runs on its OWN
 thread (an 'Async' worker) and hands events to the stream handler through its OWN
 BOUNDED 'TBQueue'. That bound is the back-pressure: when a run's queue fills, its
 worker's 'writeTBQueue' blocks, so a fast sampler cannot outrun a slow client and
-memory between the two stays capped (the edge-case notes, streaming volume). WSL2
-forwards localhost to the Windows host, so this loopback port is reachable from a
+memory between the two stays capped, bounding streaming volume. Under WSL,
+localhost forwards to the Windows host, so this loopback port is reachable from a
 host browser without extra configuration.
 
 Concurrent per-run streams keyed by RunId: each POST mints a RunId, spawns a worker
@@ -26,17 +26,20 @@ summarize), then shapes their output into 'Credence.Wire' values. No sampler,
 density, or acceptance ratio is reimplemented here; correctness lives in the
 library and its tests.
 
-Trust boundaries (see the plan's threat model): the POST body is untrusted JSON,
-so it is decoded with @aeson@ and a failed decode returns 400 before any run is
-allocated rather than feeding junk into a model constructor (the plan). A
+Trust boundaries: the POST body is untrusted JSON, so it is decoded with @aeson@ and
+a failed decode returns 400 before any run is allocated rather than feeding junk into
+a model constructor. A decoded body is then bounded by
+'Credence.Wire.validateRunRequest' (a pure check), which rejects a dataset that does
+not match the route, a non-positive or over-budget @samples@, an over-long dataset,
+or an empty tracking sequence with a 400, again before any run is allocated, so
+neither a hostile @samples@ count nor an unbounded dataset can reach a worker. A
 client-supplied RunId on @\/stream\/\<id\>@ only indexes the in-memory map; an
 unknown id reaches a benign no-active-run frame and grants no capability beyond
-reading a stream the same origin started (the plan). The development CORS header
-opens cross-origin reads, accepted because the server binds 127.0.0.1 only. Each
-run's bounded queue caps its in-flight memory regardless of producer speed
-(the plan), the live-run cap bounds the worker count regardless of POST volume
-(the plan), and the run length is capped so a huge @samples@ value cannot drive an
-unbounded computation.
+reading a stream the same origin started. The CORS header opens cross-origin reads,
+a local-development convenience that is safe because the server binds 127.0.0.1 only.
+Each run's bounded queue caps its in-flight memory regardless of producer speed, the
+live-run cap bounds the worker count regardless of POST volume, and the validated,
+capped run length bounds the per-run computation.
 -}
 module Main (main) where
 
@@ -57,7 +60,12 @@ import Control.Concurrent.STM (
 import Control.Monad (forM_, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Primitive (RealWorld)
-import Credence.Inference.Importance (importanceSamples, normalizedLogWeights, posteriorMean)
+import Credence.Inference.Importance (
+    importanceSamples,
+    normalizedLogWeights,
+    posteriorMean,
+    posteriorMeanVariance,
+ )
 import Credence.Inference.MH (mhChain)
 import Credence.Inference.SMC (CloudStep (..), FilterStep (..), particleCloud)
 import Credence.Model (Model, coinModel)
@@ -68,11 +76,14 @@ import Credence.Model.Tracking (trackingModel)
 import Credence.Wire (
     Batch (..),
     Dataset (..),
+    DatasetKind (..),
     Method (..),
     RunRequest (..),
     RunStarted (..),
     StreamEvent (..),
     Summary (..),
+    requestErrorMessage,
+    validateRunRequest,
  )
 import Data.Aeson (decode, encode)
 import Data.ByteString.Builder (Builder, lazyByteString)
@@ -81,6 +92,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
@@ -102,8 +114,8 @@ import Web.Scotty (
     stream,
  )
 
-{- | The loopback port the engine binds. Per the project notes the streaming engine lives
-on 127.0.0.1:3001; WSL2 forwards localhost so a host browser reaches it.
+{- | The loopback port the engine binds. The streaming engine lives
+on 127.0.0.1:3001; under WSL, localhost forwards so a host browser reaches it.
 -}
 enginePort :: Int
 enginePort = 3001
@@ -112,7 +124,7 @@ enginePort = 3001
 back-pressure budget, not a buffer to smooth bursts. A producer that gets this far
 ahead of its drainer blocks on 'writeTBQueue' until the client catches up, so a
 run's in-flight memory never exceeds this many events no matter how fast the
-sampler runs (the plan, edge case streaming volume). 64 is enough to keep the
+sampler runs, to bound streaming volume. 64 is enough to keep the
 stream busy without letting the worker race ahead.
 -}
 queueBound :: Int
@@ -121,7 +133,7 @@ queueBound = 64
 {- | The maximum number of live runs the registry holds at once. Each POST spawns a
 worker into its own queue; without a cap, a client that POSTs repeatedly without
 ever draining (or whose runs block on a full queue because no one connected) would
-accumulate workers without bound (the plan). 8 is generous for the demos (the method
+accumulate workers without bound. 8 is generous for the demos (the method
 race needs two at a time) while still bounding the worker and memory count. Before
 inserting a new run the registry first prunes finished runs; if it is still at this
 cap the POST is refused with a 503 rather than spawning past the bound.
@@ -129,10 +141,12 @@ cap the POST is refused with a 503 rather than spawning past the bound.
 maxLiveRuns :: Int
 maxLiveRuns = 8
 
-{- | The maximum run length the worker will drive to, regardless of the @samples@
-value in the request. A request asking for far more is silently capped to this,
-which bounds the per-run computation so a large (or hostile) @samples@ cannot pin
-the engine. Within the cap the run is driven incrementally so the posterior is
+{- | The maximum run length the worker will drive to. A request's @samples@ is first
+bounded at the boundary by 'validateRunRequest' (an over-budget value is a 400, not a
+silent clamp), so by the time the worker runs, @samples@ is already a sane positive
+number; this is a second, smaller ceiling on how long any single run streams, kept so
+even an in-bounds request produces a responsive, finite convergence animation rather
+than one very long run. Within it the run is driven incrementally so the posterior is
 observable as it converges, rather than computed in one shot.
 -}
 runCap :: Int
@@ -142,14 +156,14 @@ runCap = 20000
 @batchStep@ additional samples, so a run of @n@ samples produces about
 @n / batchStep@ summary updates. Smaller means a smoother convergence animation
 and more frames; larger means fewer, coarser updates. This is the
-\"drive in increments\" knob the plan calls for.
+\"drive in increments\" knob.
 -}
 batchStep :: Int
 batchStep = 500
 
 {- | The number of raw draws a 'Batch' carries to the client. The engine may draw
 tens of thousands of values; only this many, evenly thinned, reach the browser
-per batch (the edge-case notes, streaming volume). The wire 'Batch' type makes
+per batch, to bound streaming volume. The wire 'Batch' type makes
 the subsample explicit; this is its size.
 -}
 subsampleSize :: Int
@@ -167,7 +181,7 @@ of every other, which is what lets runs stream concurrently.
 'runQueue' is the bounded channel this run's worker fills and its stream drains.
 'runLatest' holds the most recent 'Summary' (or 'Nothing' until the first batch),
 so a client that connects or reconnects mid-run gets the current state at once
-rather than waiting for the next batch (edge case SSE drop, reconnect resume).
+rather than waiting for the next batch, surviving an SSE drop and reconnect.
 'runWorker' is the worker handle, kept so the registry can poll whether it has
 finished when pruning.
 -}
@@ -203,39 +217,41 @@ main = do
                 }
     scottyOpts opts $ do
         -- POST starts a run for each model. The route fixes which model the
-        -- request's Dataset must match; a mismatched dataset is a 400. The
-        -- response carries the fresh RunId the client then streams.
-        post "/run/coin" (startRun registry Coin{datasetFlips = []})
-        post "/run/regression" (startRun registry Regression{datasetPoints = []})
-        post "/run/localization" (startRun registry Localization{datasetReadings = []})
-        post "/run/tracking" (startRun registry Tracking{datasetObservations = []})
-        post "/run/mixture" (startRun registry Mixture{datasetMixturePoints = []})
+        -- request's Dataset must match; a mismatched dataset, an out-of-bounds
+        -- samples budget, or an over-long dataset is a 400 (see validateRunRequest).
+        -- The response carries the fresh RunId the client then streams.
+        post "/run/coin" (startRun registry CoinKind)
+        post "/run/regression" (startRun registry RegressionKind)
+        post "/run/localization" (startRun registry LocalizationKind)
+        post "/run/tracking" (startRun registry TrackingKind)
+        post "/run/mixture" (startRun registry MixtureKind)
         -- GET drains one run's queue as an event stream, keyed by the RunId
         -- captured from the path.
         get "/stream/:runId" (streamRun registry)
 
-{- | Decode the POSTed 'RunRequest', allocate a fresh 'RunId', spawn its worker,
-register the keyed run, and return the RunId as JSON.
+{- | Decode the POSTed 'RunRequest', validate it, allocate a fresh 'RunId', spawn its
+worker, register the keyed run, and return the RunId as JSON.
 
 The body is untrusted, so it is decoded with @aeson@'s 'decode' and a parse failure
-returns 400 with no run allocated (the plan): a malformed body never reaches a model
-constructor. The first argument is a witness of which dataset constructor this route
-expects (its contents are ignored); if the decoded request carries the other
-constructor, that too is a 400, so @\/run\/coin@ cannot be driven with regression
-points. On success a new RunId, bounded queue, and worker are created and inserted
+returns 400 with no run allocated: a malformed body never reaches a model
+constructor. A decoded body is then put through 'validateRunRequest' against this
+route's 'DatasetKind', which rejects (400, with a message naming the problem) a
+dataset whose constructor does not match the route, a non-positive or over-budget
+@samples@, an over-long dataset, or an empty tracking sequence, all before any run is
+allocated. On success a new RunId, bounded queue, and worker are created and inserted
 into the registry; the worker begins feeding its queue at once. If the registry is
 already full ('maxLiveRuns', after pruning finished runs) the run is refused with a
 503 rather than spawning past the bound.
 -}
-startRun :: Registry -> Dataset -> ActionM ()
+startRun :: Registry -> DatasetKind -> ActionM ()
 startRun registry expected = do
     reqBody <- body
     case decode reqBody of
         Nothing -> badRequest "could not parse run request as json"
         Just req ->
-            case matchDataset expected (runRequestDataset req) of
-                Nothing -> badRequest "dataset does not match this route"
-                Just dataset -> do
+            case validateRunRequest expected req of
+                Left err -> badRequest (T.pack (requestErrorMessage err))
+                Right dataset -> do
                     mRunId <- liftIO (launch registry req dataset)
                     case mRunId of
                         Nothing -> do
@@ -247,24 +263,14 @@ startRun registry expected = do
                             setHeader "Content-Type" "application/json"
                             raw (encode (RunStarted{runStartedRunId = runId}))
   where
+    -- A 400 with a plain-text reason. The message is strict Text (from
+    -- requestErrorMessage or a literal); raw wants a lazy ByteString, so it is
+    -- promoted to lazy Text and UTF-8 encoded.
+    badRequest :: Text -> ActionM ()
     badRequest msg = do
         status status400
         corsHeader
-        raw (TLE.encodeUtf8 msg)
-
-{- | Confirm the decoded dataset is the constructor this route serves, returning it
-normalized. @\/run\/coin@ accepts only 'Coin', @\/run\/regression@ only
-'Regression'; anything else is 'Nothing' and the caller turns that into a 400. This
-keeps an invalid dataset from ever reaching a model constructor, the same defense
-the JSON decode gives against a malformed body.
--}
-matchDataset :: Dataset -> Dataset -> Maybe Dataset
-matchDataset Coin{} d@Coin{} = Just d
-matchDataset Regression{} d@Regression{} = Just d
-matchDataset Localization{} d@Localization{} = Just d
-matchDataset Tracking{} d@Tracking{} = Just d
-matchDataset Mixture{} d@Mixture{} = Just d
-matchDataset _ _ = Nothing
+        raw (TLE.encodeUtf8 (TL.fromStrict msg))
 
 {- | Allocate and register a fresh run, or refuse if the registry is full.
 
@@ -386,7 +392,7 @@ size @1 / sum(normalizedWeight^2)@ from the log-weight column; acceptance rate i
 'Nothing' (importance has no accept step). The returned weights are the normalized
 importance weights thinned by the SAME stride and in the SAME order as the draws (so
 @weights !! i@ belongs to @draws !! i@), which is the opacity-by-weight input the
-cloud reads (the edge-case notes: only the bounded subsample, with its weights,
+cloud reads (only the bounded subsample, with its weights,
 crosses the wire). For 'MH': run an @n@-step chain, take the plain mean and variance
 over the visited values and the measured acceptance rate from 'mhChain'; ESS is
 'Nothing' (the chain ESS is an autocorrelation-based quantity not computed here), and
@@ -413,10 +419,14 @@ computeBatch method dataset n idx gen =
     case method of
         Importance -> do
             samples <- importanceSamples n (buildModel dataset) gen
-            let mean = posteriorMean samples id
-                second = posteriorMean samples (\x -> x * x)
-                var = max 0 (second - mean * mean)
-                -- ESS from the normalized importance weights: 1 / sum(w_i^2).
+            let
+                -- Mean and variance from a single normalization (see
+                -- posteriorMeanVariance), rather than two posteriorMean passes.
+                (mean, var) = posteriorMeanVariance samples id
+                -- ESS from the normalized importance weights: 1 / sum(w_i^2). This
+                -- normalization is not redundant with the one above: its output is
+                -- the per-draw weight vector the wire carries (thinned below), so it
+                -- is computed here and reused for both the ESS and the wire weights.
                 logWs = VU.convert (V.map snd samples)
                 normW = normalizedLogWeights logWs
                 ess = 1 / VU.sum (VU.map (\w -> w * w) normW)
@@ -608,7 +618,7 @@ do not buffer or cache the stream, and the development CORS header (see
 'corsHeader'). The RunId is read from the @\/stream\/\<runId\>@ capture and looked
 up in the registry. On a hit, the run's latest 'Summary' is sent first so a client
 connecting or reconnecting mid-run recovers the current state immediately
-(edge case SSE drop, reconnect resume) rather than waiting for the next batch, then
+(surviving an SSE drop and reconnect) rather than waiting for the next batch, then
 the loop writes one SSE frame per event as @data: <json>\\n\\n@, flushing after each
 so events arrive promptly, and stops when it reads 'EvDone'. On a miss (an unknown
 or already-completed RunId) it sends a single comment frame and returns, so the
@@ -670,11 +680,12 @@ sseFrame ev = lazyByteString ("data: " <> encode ev <> "\n\n")
 {- | The development CORS header: allow any origin to read the engine.
 
 The web app on localhost:3000 calls the engine on 127.0.0.1:3001, a cross-origin
-request the browser blocks without this header (edge case CORS). It is wide open
-on purpose for local development. This MUST be tightened before any non-local
-deployment: the server is loopback-bound (127.0.0.1) so this is safe locally, but
-a public bind with @*@ here would expose the engine to any site. Tighten to the
-specific web origin (or drop the header and serve same-origin) before deploying.
+request the browser blocks without this header. It is wide open on purpose, a
+local-development setting that is safe only because the server binds 127.0.0.1
+(loopback) and is unreachable off the host. If the engine were ever bound to a
+public interface, this @*@ would have to be narrowed to the specific web origin (or
+the header dropped and the app served same-origin); on loopback it grants nothing a
+local process does not already have.
 -}
 corsHeader :: ActionM ()
 corsHeader = setHeader "Access-Control-Allow-Origin" "*"
