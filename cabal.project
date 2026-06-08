@@ -22,3 +22,12 @@ import: https://www.stackage.org/lts-22.44/cabal.config
 -- On the first successful build, run `cabal freeze` to write cabal.project.freeze
 -- and capture the resolved plan on this machine. Commit that file. After that,
 -- the build is bit-for-bit reproducible and the import above becomes a backstop.
+
+-- Build this package at -O2. cabal defaults to -O1; the engine is numerics-heavy,
+-- so the extra strictness analysis, unboxing, and specialization of the
+-- polymorphic Dist and interpreter code is worth the slower compile. This only
+-- raises the level for credence itself, not the dependency closure. Optimization
+-- preserves denotational semantics, and the 1e-12 identity tests pin the
+-- floating-point behavior, so a regression would fail loudly.
+package credence
+    optimization: 2

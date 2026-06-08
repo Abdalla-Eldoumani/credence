@@ -65,8 +65,9 @@ export default function RacePage() {
           {raceToken === 0 ? "start race" : "restart"}
         </button>
         <p className={styles.hint}>
-          Streams from the engine on 127.0.0.1:3001. Start it with{" "}
-          <code>cabal run credence-server</code>.
+          Streams live from the inference engine. Run it locally with{" "}
+          <code>cabal run credence-server</code>, or point <code>NEXT_PUBLIC_ENGINE_URL</code> at a
+          hosted one.
         </p>
       </div>
     </>
