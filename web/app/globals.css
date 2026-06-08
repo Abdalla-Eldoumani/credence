@@ -1,8 +1,8 @@
 /*
   Design tokens for credence.
-  Named fonts (Fraunces, Inter, IBM Plex Mono) are wired with next/font once the
-  typography work lands; until then the stacks fall back to system fonts so the
-  shell builds and renders without a font dependency.
+  The named fonts (Fraunces, Inter, IBM Plex Mono) are loaded with next/font in
+  layout.tsx, which binds --font-display / --font-body / --font-mono to the loaded
+  families; the stacks below keep the same system fallbacks.
 */
 
 :root {
