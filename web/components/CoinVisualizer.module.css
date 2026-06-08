@@ -1,0 +1,167 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.figure {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+}
+
+@media (max-width: 768px) {
+  .figure {
+    padding: var(--space-4);
+  }
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.gridLine {
+  stroke: var(--viz-grid);
+  stroke-width: 1;
+}
+
+.axisLabel {
+  fill: var(--viz-axis);
+  font-family: var(--font-mono);
+  font-size: var(--text-axis);
+  font-variant-numeric: tabular-nums;
+}
+
+.axisTitle {
+  fill: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-axis);
+  letter-spacing: 0.02em;
+}
+
+.bar {
+  fill: var(--viz-posterior-fill);
+  stroke: var(--viz-posterior);
+  stroke-width: 2;
+}
+
+.analytic {
+  fill: none;
+  stroke: var(--viz-analytic);
+  stroke-width: 2;
+  opacity: 0;
+  transition: opacity var(--dur-medium) var(--ease-entrance);
+}
+
+.analyticVisible {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .analytic {
+    transition: opacity var(--dur-short) var(--ease-entrance);
+  }
+}
+
+/* The reconnecting pulse: a calm accent breath on the figure border, the single
+   accent hue signalling state (no second status color), per design system. */
+.reconnecting {
+  animation: pulse 1.4s var(--ease-settle) infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    border-color: var(--border-subtle);
+  }
+  50% {
+    border-color: var(--accent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reconnecting {
+    animation: none;
+    border-color: var(--accent);
+  }
+}
+
+.readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.statValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-num);
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.status {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+.statusAccent {
+  color: var(--accent);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+}
+
+.bannerText {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+.retry {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-family: var(--font-body);
+  font-size: var(--text-small);
+  font-weight: 500;
+  padding: var(--space-2) var(--space-4);
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.retry:hover {
+  background: var(--accent-muted);
+}
+
+.retry:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

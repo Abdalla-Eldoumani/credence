@@ -1,0 +1,128 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.figure {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+}
+
+@media (max-width: 768px) {
+  .figure {
+    padding: var(--space-4);
+  }
+}
+
+.canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* Pointer drags must not scroll or zoom the page on touch, so the canvas owns
+     the gesture and the 44px hit target works on touch. */
+  touch-action: none;
+}
+
+/* The canvas is keyboard-operable (arrow keys move the active point), so it
+   carries the same visible focus outline as every other interactive element. */
+.canvas:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* The reconnecting pulse: a calm accent breath on the figure border, the single
+   accent hue signalling state (no second status color), per design system. */
+.reconnecting {
+  animation: pulse 1.4s var(--ease-settle) infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    border-color: var(--border-subtle);
+  }
+  50% {
+    border-color: var(--accent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reconnecting {
+    animation: none;
+    border-color: var(--accent);
+  }
+}
+
+.readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.statValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-num);
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.statusAccent {
+  color: var(--accent);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+}
+
+.bannerText {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+.retry {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-family: var(--font-body);
+  font-size: var(--text-small);
+  font-weight: 500;
+  padding: var(--space-2) var(--space-4);
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.retry:hover {
+  background: var(--accent-muted);
+}
+
+.retry:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

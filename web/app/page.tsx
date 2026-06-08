@@ -1,17 +1,49 @@
+import Link from "next/link";
+import styles from "./page.module.css";
+
+type Demo = {
+  href: string;
+  title: string;
+  description: string;
+  method: string;
+};
+
+const demos: Demo[] = [
+  {
+    href: "/coin",
+    title: "Coin",
+    description:
+      "Infer a coin's bias from a run of flips. The Beta posterior animates as samples stream, with the exact analytic curve landing on top.",
+    method: "beta-bernoulli",
+  },
+  {
+    href: "/regression",
+    title: "Regression",
+    description:
+      "Fit a line to noisy points you can drag. A band of plausible lines collapses onto the trend as the posterior converges.",
+    method: "normal-normal",
+  },
+];
+
 export default function Home() {
   return (
-    <main
-      style={{ maxWidth: "1200px", margin: "0 auto", padding: "var(--space-16) var(--space-6)" }}
-    >
-      <h1 style={{ fontSize: "var(--text-display-l)", letterSpacing: "-0.02em", lineHeight: 1.1 }}>
-        credence
-      </h1>
-      <p
-        style={{ color: "var(--text-secondary)", fontSize: "var(--text-body-l)", maxWidth: "60ch" }}
-      >
-        An educational probabilistic programming language with a live inference visualizer. This is
-        the build skeleton. The visualizer is built in the stage tracked in the task list.
-      </p>
+    <main className={styles.page}>
+      <header className={styles.header}>
+        <h1 className={styles.title}>credence</h1>
+        <p className={styles.lede}>
+          A probabilistic programming language with a live inference visualizer. Pick a model and
+          watch the posterior converge as the exact answer settles on the approximation.
+        </p>
+      </header>
+      <section className={styles.grid}>
+        {demos.map((demo) => (
+          <Link key={demo.href} href={demo.href} className={styles.card}>
+            <h2 className={styles.cardTitle}>{demo.title}</h2>
+            <p className={styles.cardDescription}>{demo.description}</p>
+            <span className={styles.cardMeta}>{demo.method}</span>
+          </Link>
+        ))}
+      </section>
     </main>
   );
 }

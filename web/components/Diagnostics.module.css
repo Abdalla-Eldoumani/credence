@@ -1,0 +1,66 @@
+.root {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+}
+
+@media (max-width: 768px) {
+  .root {
+    padding: var(--space-4);
+  }
+}
+
+.heading {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: var(--space-4);
+}
+
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.statValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-title);
+  font-weight: 500;
+  color: var(--text);
+  /* Tabular figures so the readout does not jitter as it updates live. */
+  font-variant-numeric: tabular-nums;
+}
+
+.statNote {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-muted);
+}
+
+/* The not-converged note uses the single accent hue and weight, no second status
+   color (design system). */
+.warning {
+  margin-top: var(--space-4);
+  font-size: var(--text-small);
+  font-weight: 500;
+  color: var(--accent);
+}

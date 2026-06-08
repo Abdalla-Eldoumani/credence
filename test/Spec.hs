@@ -21,6 +21,15 @@ import Credence.Inference.MH (mhChain)
 import Credence.Model (Model (..), coinModel, observe, sample)
 import Credence.Model.Regression (linearRegression)
 import Credence.Trace (traceAddresses, traceModel)
+import Credence.Wire (
+    Batch (..),
+    Dataset (..),
+    Method (..),
+    RunRequest (..),
+    StreamEvent (..),
+    Summary (..),
+ )
+import Data.Aeson (decode, encode)
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import Data.Word (Word32)
@@ -61,6 +70,7 @@ tests =
         , mhConjugateTests
         , normalNormalTests
         , crossSeedRegressionTests
+        , wireTests
         ]
 
 {- | A structural interpreter over Sample-free models (only Pure and Observe).
@@ -969,3 +979,90 @@ crossSeedRegressionTests =
                 )
                 means
         ]
+
+{- | The wire format round-trips through aeson, so the engine and the browser
+agree on every field.
+
+The streaming boundary is only as trustworthy as its serialization: a field that
+encodes one way and decodes another is a silent data corruption between the
+inference engine and the visualizer, the streaming analogue of the silent-sampler
+hazard this suite exists to rule out. The check is @decode (encode ev) == Just ev@
+for a representative value of each constructor that crosses the wire, which fails
+loudly if a 'ToJSON'/'FromJSON' pair drifts apart.
+
+Both 'StreamEvent' arms are covered ('EvBatch' and 'EvSummary'), and within them
+every field shape: a 'Summary' with both diagnostics present and one with both
+'Nothing' (the importance-vs-MH split, where @acceptanceRate@ or
+@effectiveSampleSize@ is absent), so the @Maybe Double@ encoding round-trips in
+both states. 'RunRequest' is checked for both the coin and the regression
+'Dataset', the two bodies the client actually POSTs, so the tagged-sum decoding
+the server relies on is proven here rather than discovered at runtime. These are
+exact-equality checks, not tolerances: serialization is not statistical, so a
+round-trip is either the identity or a bug.
+-}
+wireTests :: TestTree
+wireTests =
+    testGroup
+        "wire (aeson round-trip)"
+        [ testCase "EvSummary with both diagnostics present round-trips" $ do
+            -- An MH-shaped summary: acceptance rate present, ESS present too here
+            -- only to exercise both Just fields in one value.
+            let ev =
+                    EvSummary
+                        Summary
+                            { summaryBatchIndex = 3
+                            , summaryMean = 0.6428571428571429
+                            , summaryVariance = 0.015306122448979591
+                            , summaryAcceptanceRate = Just 0.4987
+                            , summaryEffectiveSampleSize = Just 1880.25
+                            }
+            assertRoundTrip "EvSummary (Just/Just)" ev
+        , testCase "EvSummary with Nothing diagnostics round-trips (the importance shape)" $ do
+            -- An importance-shaped summary has no acceptance rate; here ESS is also
+            -- Nothing to prove a fully absent Maybe Double pair survives the trip.
+            let ev =
+                    EvSummary
+                        Summary
+                            { summaryBatchIndex = 0
+                            , summaryMean = 0.5
+                            , summaryVariance = 0.0
+                            , summaryAcceptanceRate = Nothing
+                            , summaryEffectiveSampleSize = Nothing
+                            }
+            assertRoundTrip "EvSummary (Nothing/Nothing)" ev
+        , testCase "EvBatch with a subsample of draws round-trips" $ do
+            let ev = EvBatch Batch{batchBatchIndex = 7, batchDraws = [0.61, 0.66, 0.63, 0.59]}
+            assertRoundTrip "EvBatch" ev
+        , testCase "EvDone round-trips" $
+            assertRoundTrip "EvDone" EvDone
+        , testCase "RunRequest for the coin model round-trips" $ do
+            let req =
+                    RunRequest
+                        { runRequestMethod = Importance
+                        , runRequestDataset = Coin{datasetFlips = [True, True, False, True]}
+                        , runRequestSamples = 2000
+                        }
+            assertRoundTripReq "RunRequest coin" req
+        , testCase "RunRequest for the regression model round-trips" $ do
+            let req =
+                    RunRequest
+                        { runRequestMethod = MH
+                        , runRequestDataset = Regression{datasetPoints = [(1.0, 2.1), (2.0, 3.9)]}
+                        , runRequestSamples = 3000
+                        }
+            assertRoundTripReq "RunRequest regression" req
+        ]
+  where
+    -- decode . encode is the identity on a StreamEvent: the value survives the
+    -- wire unchanged. Equality is exact because serialization is not statistical.
+    assertRoundTrip :: String -> StreamEvent -> IO ()
+    assertRoundTrip name ev =
+        assertBool
+            (name <> ": decode (encode ev) /= Just ev; got " <> show (decode (encode ev) :: Maybe StreamEvent))
+            (decode (encode ev) == Just ev)
+    -- The same identity for the request body the client POSTs to start a run.
+    assertRoundTripReq :: String -> RunRequest -> IO ()
+    assertRoundTripReq name req =
+        assertBool
+            (name <> ": decode (encode req) /= Just req; got " <> show (decode (encode req) :: Maybe RunRequest))
+            (decode (encode req) == Just req)
