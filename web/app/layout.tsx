@@ -33,8 +33,38 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "credence",
-  description: "An educational probabilistic programming language with live inference.",
+  title: {
+    default: "credence",
+    template: "%s — credence",
+  },
+  description:
+    "An educational probabilistic programming language in Haskell with a live web visualizer that animates inference converging to the analytic answer.",
+  applicationName: "credence",
+  authors: [{ name: "Abdalla Eldoumani" }],
+  keywords: [
+    "probabilistic programming",
+    "Bayesian inference",
+    "importance sampling",
+    "Metropolis-Hastings",
+    "particle filter",
+    "sequential Monte Carlo",
+    "Haskell",
+    "Next.js",
+    "data visualization",
+  ],
+  openGraph: {
+    title: "credence",
+    description:
+      "Watch a posterior converge live to a model's hidden answer, with the exact analytic curve landing on the approximation.",
+    type: "website",
+    siteName: "credence",
+  },
+  twitter: {
+    card: "summary",
+    title: "credence",
+    description:
+      "Watch a posterior converge live, on inference proven correct against the analytic answer.",
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
