@@ -17,7 +17,10 @@ import Credence.Inference.Importance (
     normalizedLogWeights,
     posteriorMean,
  )
+import Credence.Inference.MH (mhChain)
 import Credence.Model (Model (..), coinModel, observe, sample)
+import Credence.Model.Regression (linearRegression)
+import Credence.Trace (traceAddresses, traceModel)
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import Data.Word (Word32)
@@ -53,6 +56,11 @@ tests =
         , modelTests
         , importanceTests
         , conjugateTests
+        , mhTraceTests
+        , mhDetailedBalanceTests
+        , mhConjugateTests
+        , normalNormalTests
+        , crossSeedRegressionTests
         ]
 
 {- | A structural interpreter over Sample-free models (only Pure and Observe).
@@ -515,4 +523,449 @@ conjugateTests =
             assertBool
                 ("posterior variance " <> show estVar <> " near analytic " <> show analyticVar <> " (tol " <> show varTol <> ")")
                 (abs (estVar - analyticVar) < varTol)
+        ]
+
+{- | Address stability: the tracing interpreter names choices reproducibly.
+
+Trace-based MH rests on each random choice keeping a stable identity across runs,
+so a proposal perturbs the same choice it means to. Addresses are execution-order
+positions, so for a fixed-structure model the same control flow must visit the
+same 'Sample' nodes in the same order and assign the same addresses every run.
+This pins that for the coin model: two runs under the same fixed seed yield the
+same address list, and the coin model has exactly one choice, so that list is
+@[0]@. A regression here (addresses drifting or reordering) would silently break
+every MH proposal, so it is asserted directly rather than left implicit in the
+chain tests.
+-}
+mhTraceTests :: TestTree
+mhTraceTests =
+    testGroup
+        "trace addressing (stable across runs)"
+        [ testCase "coin model trace addresses are [0] on two runs with the same flips" $ do
+            let flips = replicate 7 True ++ replicate 3 False
+                -- Run the tracing interpreter twice under the same fixed seed.
+                addrs1 = runST $ do
+                    g <- initialize fixedSeed
+                    (_, t) <- traceModel (coinModel 2 2 flips) g
+                    pure (traceAddresses t)
+                addrs2 = runST $ do
+                    g <- initialize fixedSeed
+                    (_, t) <- traceModel (coinModel 2 2 flips) g
+                    pure (traceAddresses t)
+            -- The single-Sample coin model has exactly address 0, on both runs.
+            assertBool ("run 1 addresses are [0]: " <> show addrs1) (addrs1 == [0])
+            assertBool ("run 2 addresses are [0]: " <> show addrs2) (addrs2 == [0])
+            assertBool
+                ("the two runs agree on addresses: " <> show addrs1 <> " vs " <> show addrs2)
+                (addrs1 == addrs2)
+        ]
+
+{- | Detailed balance: the MH chain converges to a known stationary distribution.
+
+This is the oracle the correctness discipline mandates for MH and the check
+that the acceptance ratio and the addressing are right. A wrong ratio yields a
+smooth, plausible, WRONG stationary distribution, so the proof is a small target
+whose stationary distribution is known in closed form, against which the chain's
+empirical distribution is compared.
+
+The target is discrete and tractable, and deliberately uses a NON-UNIFORM prior so
+the proposal correction (the Hastings term) is load-bearing rather than zero. A
+categorical prior proportional to @[3, 2, 1]@ over the indices {0, 1, 2} is
+reshaped by a likelihood proportional to @[1, 3, 6]@, via @observe@ of that
+categorical's log-density at the drawn index. The posterior over the index is
+prior times likelihood, @prior_i * lik_i ~ [3, 6, 6]@, normalized to
+@[0.2, 0.4, 0.4]@, the known stationary distribution.
+
+Why non-uniform: the proposal redraws the index from the prior, so for a UNIFORM
+prior the proposal is symmetric and the Hastings correction vanishes identically;
+a chain that wrongly dropped that correction would still pass against a uniform
+target, giving the test no teeth on the proposal term. With this non-uniform
+prior the correction does not cancel (it is the standard independence-proposal
+correction that, with the prior difference, leaves the likelihood ratio
+@lik_j / lik_i@), so dropping it skews the stationary distribution toward the
+high-prior index and the test fails loudly. That is the mutation the test-teeth
+check exercises, and at the committed seed dropping the Hastings term moves the
+empirical distribution to roughly @[0.33, 0.44, 0.22]@, about 0.18 off the target
+and ~9x outside the tolerance below. The acceptance rate is asserted strictly
+inside (0,1): a chain that never moves or always moves is a bug even if the
+frequencies happen to match.
+-}
+mhDetailedBalanceTests :: TestTree
+mhDetailedBalanceTests =
+    testGroup
+        "detailed balance (chain converges to a known stationary distribution)"
+        [ testCase "MH empirical distribution matches [0.2,0.4,0.4] and the acceptance rate is in (0,1)" $ do
+            let
+                -- Non-uniform prior and a likelihood; the stationary distribution is
+                -- prior_i * lik_i normalized, which is [3,6,6]/15 = [0.2,0.4,0.4].
+                priorWs = VU.fromList [3, 2, 1 :: Double]
+                likWs = VU.fromList [1, 3, 6 :: Double]
+                unnormalized = VU.zipWith (*) priorWs likWs
+                total = VU.sum unnormalized
+                stationary = map (/ total) (VU.toList unnormalized)
+                -- Draw the index from the non-uniform prior, then reshape by the
+                -- likelihood. The non-uniform prior keeps the Hastings correction
+                -- non-zero, so the full acceptance ratio is genuinely tested.
+                target = do
+                    i <- sample (categoricalDist priorWs)
+                    observe (logDensityDist (categoricalDist likWs) i)
+                    pure i
+                -- A long chain with a burn-in discarded. Fixed ST seed.
+                n = 200000
+                burn = 20000
+                (chain, rate) = runST $ do
+                    g <- initialize fixedSeed
+                    mhChain n target g
+                kept = V.drop burn chain
+                keptN = fromIntegral (V.length kept) :: Double
+                -- Empirical frequency of each index over the post-burn chain.
+                empirical =
+                    [ fromIntegral (V.length (V.filter (== j) kept)) / keptN
+                    | j <- [0 .. VU.length priorWs - 1]
+                    ]
+                -- Tolerance. Each bin frequency is a multinomial proportion; its
+                -- standard error is sqrt(p(1-p)/Neff). MH samples are
+                -- autocorrelated, so the effective sample size is below the 180000
+                -- kept draws; budget a conservative Neff ~ n/10 = 18000. The
+                -- worst-case bin p=0.4 then has SE ~ sqrt(0.24/18000) ~ 0.0037, so
+                -- a 0.02 window is ~5 SE: a correct chain clears it essentially
+                -- always, while a wrong acceptance ratio (the dropped-Hastings
+                -- mutation skews this to ~0.18 off) misses by far more. The observed
+                -- max deviation at the committed seed is ~0.0017, about 11x inside
+                -- the window.
+                tol = 0.02
+            -- The acceptance rate must be a genuine accept/reject, not degenerate.
+            assertBool
+                ("acceptance rate strictly in (0,1): " <> show rate)
+                (rate > 0 && rate < 1)
+            -- The chain's empirical distribution matches the known stationary one.
+            mapM_
+                ( \(j, e, s) ->
+                    assertBool
+                        ("index " <> show j <> " empirical " <> show e <> " near stationary " <> show s <> " (tol " <> show tol <> ")")
+                        (abs (e - s) < tol)
+                )
+                (zip3 [0 :: Int ..] empirical stationary)
+        ]
+
+{- | THE MH conjugate gate: the chain matches the analytic Beta posterior.
+
+The second oracle for MH, alongside detailed balance, and the exact analogue of
+the stage 1 importance-sampling gate: on the coin model, whose posterior is
+the closed-form Beta(a+h, b+t), the MH chain's empirical mean and variance must
+match that posterior. Mean alone is not enough (a chain can hit the mean while
+getting the spread wrong), so variance is checked too, and the analytic moments
+are independently cross-checked against @statistics@' @betaDistr@ so a typo in
+either path is caught. Passing this together with detailed balance closes the
+first half of the stage 2 gate.
+
+Unlike the importance sample, MH draws are autocorrelated, so the effective sample
+size is well below the chain length and the windows are looser than the
+importance-sampling gate's for the same nominal n. The proposal is the single-site
+prior proposal on the one Beta choice, which mixes well here (the measured
+acceptance rate is about 0.5), so a moderate chain with a burn-in lands inside the
+documented windows essentially always. The acceptance rate is also asserted inside
+(0,1).
+-}
+mhConjugateTests :: TestTree
+mhConjugateTests =
+    testGroup
+        "MH conjugate-analytic agreement (Beta posterior on the coin model)"
+        [ testCase "MH chain matches Beta(a+h, b+t) in mean and variance; acceptance rate in (0,1)" $ do
+            let
+                -- Prior Beta(2,2), 7 heads and 3 tails, so posterior Beta(9,5).
+                (a, b) = (2, 2) :: (Double, Double)
+                heads = 7 :: Int
+                tails = 3 :: Int
+                flips = replicate heads True ++ replicate tails False
+                a' = a + fromIntegral heads
+                b' = b + fromIntegral tails
+                -- Analytic posterior moments by the closed-form Beta formulas.
+                analyticMean = a' / (a' + b')
+                analyticVar = (a' * b') / ((a' + b') * (a' + b') * (a' + b' + 1))
+                -- Independent cross-check via statistics, same defense as stage 1.
+                refDist = betaDistr a' b'
+                -- The MH chain on the coin model under a FIXED ST seed.
+                n = 200000
+                burn = 20000
+                (chain, rate) = runST $ do
+                    g <- initialize fixedSeed
+                    mhChain n (coinModel a b flips) g
+                kept = V.drop burn chain
+                keptN = fromIntegral (V.length kept) :: Double
+                -- Empirical mean and variance over the post-burn chain, variance by
+                -- E[theta^2] - (E[theta])^2.
+                estMean = V.sum kept / keptN
+                estSecond = V.sum (V.map (\x -> x * x) kept) / keptN
+                estVar = estSecond - estMean * estMean
+                -- Tolerances. The target is Beta(9,5), mean 9/14 ~ 0.643, sd ~ 0.124.
+                -- MH samples are autocorrelated, so the effective sample size is
+                -- below the 180000 kept draws; at the measured acceptance rate ~0.5
+                -- a conservative ESS ~ n/10 = 18000 gives a mean SE ~ 0.124/sqrt(18000)
+                -- ~ 0.00092, so a 0.02 mean window is ~20 SE. The variance is a
+                -- noisier second-moment estimator against an analytic value of only
+                -- ~0.0153, so it gets the looser 0.005 window (the same value the
+                -- importance gate uses). Both clear a correct chain essentially
+                -- always while a wrong acceptance ratio misses by far more.
+                meanTol = 0.02
+                varTol = 0.005
+            -- Hand formulas agree with the statistics reference to round-off.
+            assertBool
+                ("analytic mean matches betaDistr: " <> show analyticMean <> " vs " <> show (mean refDist))
+                (abs (analyticMean - mean refDist) < 1e-9)
+            assertBool
+                ("analytic variance matches betaDistr: " <> show analyticVar <> " vs " <> show (variance refDist))
+                (abs (analyticVar - variance refDist) < 1e-9)
+            -- The acceptance rate is a genuine accept/reject.
+            assertBool
+                ("acceptance rate strictly in (0,1): " <> show rate)
+                (rate > 0 && rate < 1)
+            -- The gate: the MH posterior agrees with the analytic posterior.
+            assertBool
+                ("MH posterior mean " <> show estMean <> " near analytic " <> show analyticMean <> " (tol " <> show meanTol <> ")")
+                (abs (estMean - analyticMean) < meanTol)
+            assertBool
+                ("MH posterior variance " <> show estVar <> " near analytic " <> show analyticVar <> " (tol " <> show varTol <> ")")
+                (abs (estVar - analyticVar) < varTol)
+        ]
+
+{- | The regression fixture shared by the Normal-Normal agreement gate and the
+cross-seed convergence test.
+
+One single-coefficient line @y = w * x@ with a broad Normal prior on the slope,
+known observation noise, and a small literal dataset near the true slope 2. The
+parameters live here once so both tests run the same model and agree on the
+analytic posterior; changing the fixture in one place changes it for both, which
+is what keeps the cross-seed test honest about the same @muN@ the agreement test
+checks.
+
+Prior @Normal(0, 3)@ is weakly informative (the truth 2 sits 0.67 prior-sd from
+the mean), known noise @sigmaL = 1@. The five points carry mild deviations off
+@y = 2 x@, kept literal so every run is deterministic.
+-}
+regMu0, regSigma0, regSigmaL :: Double
+regMu0 = 0.0
+regSigma0 = 3.0
+regSigmaL = 1.0
+
+regPoints :: [(Double, Double)]
+regPoints = [(1.0, 2.1), (2.0, 3.9), (3.0, 6.2), (4.0, 7.8), (5.0, 10.3)]
+
+{- | The closed-form Normal-Normal posterior on the slope for 'regPoints',
+computed in precision form (precision is one over variance).
+
+For a Normal prior @Normal(mu0, sigma0)@ on @w@ and observations @y_i ~
+Normal(w * x_i, sigmaL)@ with known @sigmaL@, the posterior on @w@ is Normal with
+posterior precision @1/sigma0^2 + (sum_i x_i^2)/sigmaL^2@ and posterior mean
+@posteriorVar * (mu0/sigma0^2 + (sum_i x_i*y_i)/sigmaL^2)@. This is the scalar
+Normal-Normal conjugate result with each observation weighted by its @x_i@,
+derived from the location form rather than asserted blind; the agreement test is
+what arbitrates it. Returns @(muN, sigmaN^2)@.
+-}
+regPosterior :: (Double, Double)
+regPosterior = (muN, varN)
+  where
+    sx2 = sum [x * x | (x, _) <- regPoints]
+    sxy = sum [x * y | (x, y) <- regPoints]
+    priorPrec = 1 / (regSigma0 * regSigma0)
+    tauN = priorPrec + sx2 / (regSigmaL * regSigmaL)
+    varN = 1 / tauN
+    muN = varN * (regMu0 * priorPrec + sxy / (regSigmaL * regSigmaL))
+
+{- | THE Normal-Normal gate: the regression posterior matches its closed-form
+Normal posterior in mean and variance.
+
+The second conjugate oracle the correctness discipline mandates, independent
+of the Beta gate and on a structurally different model: a continuous latent with
+many observations rather than one Beta draw. The fixture is conjugate
+Normal-Normal with known noise ('regPoints'), so the posterior on the slope is an
+exact Normal whose mean @muN@ and variance @sigmaN^2@ come from the precision-form
+formulas in 'regPosterior'. Importance sampling on @linearRegression@ under a
+fixed ST seed must reproduce both. Mean alone is not enough (a sampler can hit the
+mean while getting the spread wrong), so the variance is checked too.
+
+The analytic @muN@ and @sigmaN^2@ are cross-checked against @statistics@'
+@normalDistr muN sigmaN@ to round-off before the sampler is judged: @mean@ and
+@variance@ of that Normal are just @muN@ and @sigmaN^2@, so the check is trivially
+true and serves as the typo guard that the values feeding the assertion are the
+ones the formulas compute, the same defense the Beta gate uses against a
+mistyped closed form.
+
+Importance sampling is the lowest-variance choice for this exact-match gate; MH
+agreement on regression is exercised additionally by the cross-seed test. This
+fixture demonstrates a second model running under an interpreter unchanged.
+-}
+normalNormalTests :: TestTree
+normalNormalTests =
+    testGroup
+        "Normal-Normal conjugate agreement (regression posterior on the slope)"
+        [ testCase "regression importance posterior matches the closed-form Normal posterior in mean and variance" $ do
+            let
+                -- Analytic posterior on the slope from the precision-form formulas.
+                (analyticMean, analyticVar) = regPosterior
+                analyticSd = sqrt analyticVar
+                -- Independent cross-check: the same moments via statistics. mean and
+                -- variance of normalDistr muN sigmaN are muN and sigmaN^2, so a
+                -- disagreement here means the analytic path was mistyped.
+                refDist = normalDistr analyticMean analyticSd
+                -- Importance sampling on the regression model under a FIXED ST seed.
+                n = 200000
+                samples = runST $ do
+                    g <- initialize fixedSeed
+                    importanceSamples n (linearRegression regMu0 regSigma0 regSigmaL regPoints) g
+                -- Estimated posterior mean and variance from the weighted sample,
+                -- variance by E[w^2] - (E[w])^2 on the normalized weights.
+                estMean = posteriorMean samples id
+                estSecond = posteriorMean samples (\w -> w * w)
+                estVar = estSecond - estMean * estMean
+                -- Tolerances. The proposal is the prior Normal(0,3); the target is
+                -- the posterior Normal(muN ~ 2.018, sigmaN ~ 0.135). The likelihood
+                -- (five Normal factors with sum x^2 = 55, sigmaL = 1) is sharper than
+                -- the broad prior, so the effective sample size is ~5% of n; at
+                -- n = 2e5 that is ESS ~ 10000 and the self-normalized mean SE ~
+                -- sigmaN/sqrt(ESS) ~ 0.135/100 ~ 0.00135, so the 0.01 mean window is
+                -- ~7 SE: a correct sampler clears it essentially always (a 40-seed
+                -- sweep had max mean error ~0.002, ~5x inside). The variance is a
+                -- noisier second-moment estimator against an analytic value of only
+                -- ~0.0181, so it gets the looser 0.005 window, the same value the
+                -- Beta gate uses (the 40-seed sweep had max variance error ~0.0004,
+                -- ~12x inside). A mis-weighted sampler collapses toward the prior
+                -- variance 9 and misses by orders of magnitude.
+                meanTol = 0.01
+                varTol = 0.005
+            -- Hand formulas agree with the statistics reference to round-off.
+            assertBool
+                ("analytic mean matches normalDistr: " <> show analyticMean <> " vs " <> show (mean refDist))
+                (abs (analyticMean - mean refDist) < 1e-9)
+            assertBool
+                ("analytic variance matches normalDistr: " <> show analyticVar <> " vs " <> show (variance refDist))
+                (abs (analyticVar - variance refDist) < 1e-9)
+            -- The gate: the importance posterior agrees with the analytic posterior.
+            assertBool
+                ("posterior mean " <> show estMean <> " near analytic " <> show analyticMean <> " (tol " <> show meanTol <> ")")
+                (abs (estMean - analyticMean) < meanTol)
+            assertBool
+                ("posterior variance " <> show estVar <> " near analytic " <> show analyticVar <> " (tol " <> show varTol <> ")")
+                (abs (estVar - analyticVar) < varTol)
+        ]
+
+{- | Three distinct fixed seeds for the cross-seed convergence test.
+
+A single fixed seed proves a run is reproducible; it does not prove the estimate
+is stable rather than right by luck on one draw. These are three different Word32
+vectors (the first is the suite's 'fixedSeed'), committed so every run is
+reproducible while still exercising three independent random streams. The
+cross-seed test asserts the per-seed estimates agree with each other and with the
+analytic posterior under both interpreters.
+-}
+crossSeeds :: [VU.Vector Word32]
+crossSeeds =
+    [ fixedSeed
+    , VU.fromList [0x1234, 0x5678, 0x9abc, 0xdef0]
+    , VU.fromList [0x0f1e, 0x2d3c, 0x4b5a, 0x6978]
+    ]
+
+{- | Cross-seed convergence sanity: the regression posterior-mean estimate is
+stable across seeds under BOTH importance sampling and MH.
+
+The companion to the Normal-Normal gate. That gate proves the posterior is right
+on one seed; this proves the estimate is not a lucky one-seed fluke, by running
+the SAME fixture ('regPoints', so the analytic @muN@ from 'regPosterior' is known)
+under three distinct fixed seeds and asserting the per-seed estimates agree with
+each other and with @muN@. It runs under both interpreters, which is also the
+operational-monad payoff in miniature: the one regression model drives importance
+sampling and MH with no change to either.
+
+For MH the acceptance rate on each seed is asserted strictly in (0,1): a chain
+that never moves or always moves would be a degenerate pass even if a mean happened
+to match. The proposal is the single-site prior proposal on the one slope, an
+independence proposal from the broad prior; against the tight posterior it accepts
+about 4 to 5 percent of the time, low but a genuine accept/reject, so the chains
+are run long with a burn-in to let that mixing average out.
+-}
+crossSeedRegressionTests :: TestTree
+crossSeedRegressionTests =
+    testGroup
+        "cross-seed convergence (regression stable across seeds under both methods)"
+        [ testCase "importance posterior mean is stable across seeds and near analytic muN" $ do
+            let
+                (analyticMean, _) = regPosterior
+                model = linearRegression regMu0 regSigma0 regSigmaL regPoints
+                n = 200000
+                -- One importance posterior-mean estimate per seed, each in ST.
+                perSeed =
+                    [ runST $ do
+                        g <- initialize seed
+                        samples <- importanceSamples n model g
+                        pure (posteriorMean samples id)
+                    | seed <- crossSeeds
+                    ]
+                spread = maximum perSeed - minimum perSeed
+                -- Tolerances. Each per-seed estimate is a self-normalized importance
+                -- mean at ESS ~ 5% of n (ESS ~ 10000 at n = 2e5), so its SE ~
+                -- sigmaN/sqrt(ESS) ~ 0.135/100 ~ 0.00135. The cross-seed spread of
+                -- three such independent estimates is a few SE, so a 0.01 window
+                -- clears a correct sampler essentially always (a 40-seed sweep had a
+                -- full-range spread ~0.004); each estimate is held within 0.01 of the
+                -- analytic muN by the same SE argument the Normal-Normal gate makes.
+                spreadTol = 0.01
+                meanTol = 0.01
+            assertBool
+                ("importance cross-seed spread " <> show spread <> " within " <> show spreadTol <> " (estimates " <> show perSeed <> ")")
+                (spread < spreadTol)
+            mapM_
+                ( \est ->
+                    assertBool
+                        ("importance per-seed mean " <> show est <> " near analytic " <> show analyticMean <> " (tol " <> show meanTol <> ")")
+                        (abs (est - analyticMean) < meanTol)
+                )
+                perSeed
+        , testCase "MH posterior mean is stable across seeds, near analytic muN, with acceptance rate in (0,1)" $ do
+            let
+                (analyticMean, _) = regPosterior
+                model = linearRegression regMu0 regSigma0 regSigmaL regPoints
+                n = 200000
+                burn = 20000
+                -- One MH chain mean (after burn-in) and acceptance rate per seed.
+                perSeed =
+                    [ runST $ do
+                        g <- initialize seed
+                        (chain, rate) <- mhChain n model g
+                        let kept = V.drop burn chain
+                            m = V.sum kept / fromIntegral (V.length kept)
+                        pure (m, rate)
+                    | seed <- crossSeeds
+                    ]
+                means = map fst perSeed
+                rates = map snd perSeed
+                spread = maximum means - minimum means
+                -- Tolerances. MH draws are autocorrelated and the prior-proposal
+                -- acceptance rate is low (~0.045), so the effective sample size is
+                -- far below the 180000 kept draws; the chain accepts ~9000 times, so
+                -- ESS is on that order and the mean SE ~ sigmaN/sqrt(9000) ~ 0.0014.
+                -- The cross-seed spread and each per-seed deviation from muN are a few
+                -- such SE, so a 0.02 window (looser than the importance window, as the
+                -- MH conjugate gate is looser than the importance gate) clears a
+                -- correct chain essentially always: a 12-seed simulation had spread
+                -- ~0.005 and max deviation from muN ~0.003, ~7x inside.
+                spreadTol = 0.02
+                meanTol = 0.02
+            -- Each chain is a genuine accept/reject, not degenerate.
+            mapM_
+                ( \rate ->
+                    assertBool
+                        ("MH acceptance rate strictly in (0,1): " <> show rate)
+                        (rate > 0 && rate < 1)
+                )
+                rates
+            assertBool
+                ("MH cross-seed spread " <> show spread <> " within " <> show spreadTol <> " (means " <> show means <> ")")
+                (spread < spreadTol)
+            mapM_
+                ( \m ->
+                    assertBool
+                        ("MH per-seed mean " <> show m <> " near analytic " <> show analyticMean <> " (tol " <> show meanTol <> ")")
+                        (abs (m - analyticMean) < meanTol)
+                )
+                means
         ]
