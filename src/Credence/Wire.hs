@@ -6,16 +6,28 @@ running summaries.
 
 This module is the boundary between the inference engine and the web visualizer.
 It defines exactly what crosses the Server-Sent Events stream and what the client
-POSTs to start a run, and nothing else: no inference, no sampler, no log-density.
-The server builds these values from the output of the already-verified
-interpreters ("Credence.Inference.Importance", "Credence.Inference.MH") and the
-client decodes them; keeping the contract in one small module is what lets the
-two sides evolve against a single source of truth.
+POSTs to start a run: the JSON types, plus the pure validation
+('validateRunRequest') that bounds an incoming request before any run is allocated.
+It holds no inference, no sampler, and no log-density. The server builds the wire
+values from the output of the already-verified interpreters
+("Credence.Inference.Importance", "Credence.Inference.MH") and the client decodes
+them; keeping the contract and its input bounds in one small module is what lets
+the two sides evolve against a single source of truth.
+
+== Bounding an untrusted request
+
+A decoded request is still untrusted: @samples@ and the dataset array are
+client-supplied and, unbounded, a single request could pin a worker or exhaust
+memory. 'validateRunRequest' is the pure check that rejects an over-budget
+@samples@ ('maxSamples'), an over-long dataset ('maxDatasetLength'), a non-positive
+@samples@, a dataset whose constructor does not match the route, and a tracking run
+with no observations, returning the normalized 'Dataset' only when every bound
+holds. It lives here, beside the types, so it is unit-testable without a server.
 
 == What the wire carries, and what it deliberately does not
 
-A run produces far more samples than should be sent to a browser
-(the edge-case notes, streaming volume), so the wire carries running /summaries/
+A run produces far more samples than should be sent to a browser,
+so to bound streaming volume the wire carries running /summaries/
 plus a /subsample/ of draws, never every sample. 'Summary' is the converging
 posterior in a few numbers; 'Batch' is a thinned handful of raw draws for a
 histogram. No raw 'observe'-style log-weight is ever exposed: the log-space
@@ -28,17 +40,25 @@ JSON field names are camelCase and match the Haskell record field names with the
 record's type prefix dropped (so @summaryBatchIndex@ becomes @batchIndex@). Sum
 types ('Method', 'Dataset', 'StreamEvent') are tagged: a @tag@ field names the
 constructor and the remaining fields carry its contents. These names are the
-contract 03-02's EventSource client decodes, so they are stable; changing one is
+contract the EventSource client decodes, so they are stable; changing one is
 a wire break, not a refactor.
 -}
 module Credence.Wire (
     Method (..),
     Dataset (..),
+    DatasetKind (..),
     RunRequest (..),
     RunStarted (..),
     Summary (..),
     Batch (..),
     StreamEvent (..),
+    maxSamples,
+    maxDatasetLength,
+    datasetKind,
+    datasetLength,
+    RequestError (..),
+    requestErrorMessage,
+    validateRunRequest,
 ) where
 
 import Data.Aeson (
@@ -149,7 +169,7 @@ condition on, and a sample budget @samples@ (the number of importance particles
 or MH steps the run drives toward). The fields are flat, so a request reads
 @{"method":{"tag":"Importance"},"dataset":{"tag":"Coin","flips":[true,false]},"samples":2000}@.
 The server caps @samples@ to a bounded run length regardless of the value sent
-(the edge-case notes, streaming volume), so a large number cannot exhaust the
+(bounding streaming volume), so a large number cannot exhaust the
 engine.
 -}
 data RunRequest = RunRequest
@@ -209,8 +229,8 @@ instance FromJSON Summary where
 
 {- | A thinned batch of raw draws for the client's histogram: the batch index, a
 /subsample/ of the latent values, and optional per-draw normalized weights aligned
-with that subsample. Keeping the draws a subsample is the wire-level half of the
-streaming-volume rule (the edge-case notes): the engine may draw hundreds of
+with that subsample. Keeping the draws a subsample is the wire-level half of
+bounding streaming volume: the engine may draw hundreds of
 thousands of values, but only a bounded handful per batch reach the browser.
 
 @batchWeights@ is @Just ws@ for importance sampling, where @ws !! i@ is the
@@ -256,3 +276,130 @@ instance ToJSON StreamEvent where
 
 instance FromJSON StreamEvent where
     parseJSON = genericParseJSON taggedOptions
+
+{- | The largest @samples@ budget a run is allowed to request.
+
+A run is driven incrementally and the engine already caps the run length it will
+actually compute, but a request asking for an enormous budget is rejected here at
+the boundary rather than silently clamped, so the client gets a clear error instead
+of a run that quietly does less than it asked. The value is generous for the demos
+(far more than any of them needs to converge) while still finite, so a single
+request cannot ask the engine to draw an unbounded number of particles or steps.
+The engine binds loopback only, so the concern is a local client (or a bug in one)
+pinning a worker, not a remote attacker; a finite ceiling is the defense.
+-}
+maxSamples :: Int
+maxSamples = 500000
+
+{- | The largest dataset length a run is allowed to condition on.
+
+Every batch rebuilds the model over the whole dataset (and for the filter and the
+collapsed mixture, runs the population over every point), so the per-batch cost is
+linear in the dataset length. An unbounded dataset is the clearest way a single
+parseable request could exhaust memory or pin a worker, so the length is capped
+here. A few thousand points is far past what the demos use (their fixtures are
+tens of points) while keeping the per-batch work bounded.
+-}
+maxDatasetLength :: Int
+maxDatasetLength = 4096
+
+{- | The five dataset constructors named as a plain enum, so a route can say which
+constructor it serves and the request validator can compare against it without
+carrying a witness value. Each route fixes exactly one 'DatasetKind'.
+-}
+data DatasetKind
+    = CoinKind
+    | RegressionKind
+    | LocalizationKind
+    | TrackingKind
+    | MixtureKind
+    deriving (Eq, Show)
+
+-- | The 'DatasetKind' of a decoded 'Dataset', for matching a request to its route.
+datasetKind :: Dataset -> DatasetKind
+datasetKind Coin{} = CoinKind
+datasetKind Regression{} = RegressionKind
+datasetKind Localization{} = LocalizationKind
+datasetKind Tracking{} = TrackingKind
+datasetKind Mixture{} = MixtureKind
+
+-- | The number of observations a 'Dataset' carries, regardless of constructor.
+datasetLength :: Dataset -> Int
+datasetLength (Coin flips) = length flips
+datasetLength (Regression pts) = length pts
+datasetLength (Localization readings) = length readings
+datasetLength (Tracking observations) = length observations
+datasetLength (Mixture points) = length points
+
+{- | Why a 'RunRequest' was refused, each carrying the offending value so the 400
+message can name it. These are the only ways a syntactically valid (aeson-decoded)
+request can still be rejected before a run is allocated.
+-}
+data RequestError
+    = {- | The request's dataset constructor is not the one this route serves
+      (expected kind, then the kind actually sent).
+      -}
+      DatasetRouteMismatch DatasetKind DatasetKind
+    | -- | @samples@ was zero or negative; a run must draw at least one.
+      NonPositiveSamples Int
+    | -- | @samples@ exceeded 'maxSamples' (the value sent).
+      SamplesTooLarge Int
+    | -- | The dataset length exceeded 'maxDatasetLength' (the length sent).
+      DatasetTooLong Int
+    | {- | A tracking run was given no observations; the filter has no step to take
+      and summarizing an empty run is undefined, so it is rejected up front.
+      -}
+      EmptyTrackingObservations
+    deriving (Eq, Show)
+
+-- | A human-readable, client-facing message for a 'RequestError', for the 400 body.
+requestErrorMessage :: RequestError -> String
+requestErrorMessage (DatasetRouteMismatch expected got) =
+    "dataset does not match this route: expected "
+        <> show expected
+        <> " but got "
+        <> show got
+requestErrorMessage (NonPositiveSamples n) =
+    "samples must be a positive integer, got " <> show n
+requestErrorMessage (SamplesTooLarge n) =
+    "samples " <> show n <> " exceeds the maximum of " <> show maxSamples
+requestErrorMessage (DatasetTooLong len) =
+    "dataset length " <> show len <> " exceeds the maximum of " <> show maxDatasetLength
+requestErrorMessage EmptyTrackingObservations =
+    "tracking requires at least one observation"
+
+{- | Validate a decoded 'RunRequest' against the route that received it, returning
+the normalized 'Dataset' on success or the first 'RequestError' on failure.
+
+This is the pure core of the server's input hardening, factored out of the request
+handler so it can be unit-tested without a running server. The checks, in order:
+
+1. the dataset constructor matches the route's 'DatasetKind' (so @\/run\/coin@
+   cannot be driven with regression points, the same defense the JSON decode gives
+   against a malformed body, now extended to the constructor);
+2. @samples@ is strictly positive (a run must draw at least one particle or step);
+3. @samples@ does not exceed 'maxSamples' (so one request cannot ask for an
+   unbounded computation);
+4. the dataset length does not exceed 'maxDatasetLength' (so one request cannot
+   make each batch's linear pass over the data unbounded); and
+5. a tracking request carries at least one observation (the filter summarizes its
+   last step, which does not exist for an empty sequence).
+
+The order is deliberate: the route mismatch is reported first because it is the
+coarsest error, then the cheap scalar @samples@ checks, then the dataset checks.
+Only the first failure is returned, which is all a client needs to correct one
+request. On success the caller has a 'Dataset' it can build a model from, knowing
+every bound has been honored.
+-}
+validateRunRequest :: DatasetKind -> RunRequest -> Either RequestError Dataset
+validateRunRequest expected req
+    | actual /= expected = Left (DatasetRouteMismatch expected actual)
+    | n <= 0 = Left (NonPositiveSamples n)
+    | n > maxSamples = Left (SamplesTooLarge n)
+    | datasetLength dataset > maxDatasetLength = Left (DatasetTooLong (datasetLength dataset))
+    | expected == TrackingKind && datasetLength dataset == 0 = Left EmptyTrackingObservations
+    | otherwise = Right dataset
+  where
+    dataset = runRequestDataset req
+    actual = datasetKind dataset
+    n = runRequestSamples req
